@@ -11,16 +11,14 @@ from .plant import Plant
 
 
 class APFController:
-    """Artificial Potential Field controller adapted for a moving ellipse target.
+    """Energy-based / passivity-based controller with APF obstacle repulsion.
 
-    Control law:
-        u = u_track + u_speed + u_catch + u_rep
-        u_track = -kp_eff * e_p  -  k_v * e_v
-        u_speed = speed-shaping term (maintains minimum speed, accelerates when lagging)
-        u_catch = direct line-of-sight catch-up for large position error
-        u_rep   = gradient of repulsive potential
+    Control law (pure PBC: potential shaping + damping injection):
+        u = -k_att * e_p  -  k_v * e_v  -  grad V_rep
 
-    Optionally clips ||u|| <= u_max when cfg.constrain_control is True.
+    where e_p = p - p_ref, e_v = v - v_ref, and V_rep is the sum of APF
+    repulsive potentials. Optionally clips ||u|| <= u_max when
+    cfg.constrain_control is True.
     """
 
     def __init__(self, cfg: APFConfig, plant_radius: float) -> None:
@@ -106,27 +104,9 @@ class APFController:
         cfg = self.cfg
         e_p = p - p_ref
         e_v = v - v_ref
-        err_dist = float(np.linalg.norm(e_p))
-        v_norm = float(np.linalg.norm(v))
-        v_ref_norm = float(np.linalg.norm(v_ref))
 
-        # Attractive term with adaptive gain (grows with tracking error)
-        kp_eff = cfg.k_att * (1.0 + cfg.k_att_boost * np.tanh(err_dist / cfg.err_boost_dist))
-        u_track = -kp_eff * e_p - cfg.k_v * e_v
-
-        # Speed-shaping: anchor minimum speed to target speed; increase when lagging
-        v_des_min = max(cfg.min_speed_abs, cfg.min_speed_ratio_to_target * v_ref_norm)
-        v_des = v_des_min + cfg.speed_err_gain * err_dist
-        move_dir = Plant.safe_normalize((p_ref - p) + 0.7 * v_ref, fallback=v)
-        vel_dir = v / v_norm if v_norm > 1e-6 else move_dir
-        u_speed = cfg.k_speed * (v_des - v_norm) * vel_dir
-
-        # Direct catch-up along line-of-sight for large lag
-        u_catch = cfg.k_catch * np.tanh(err_dist / cfg.err_boost_dist) * Plant.safe_normalize(
-            p_ref - p, fallback=v_ref
-        )
-
-        u = u_track + u_speed + u_catch + self.repulsive_gradient(p, obstacles)
+        # Potential shaping (attractive) + damping injection + repulsive gradient.
+        u = -cfg.k_att * e_p - cfg.k_v * e_v + self.repulsive_gradient(p, obstacles)
 
         if cfg.constrain_control:
             u = Plant.unit_clip(u, cfg.u_max)

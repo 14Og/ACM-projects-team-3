@@ -47,6 +47,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=None,
                         help="Random seed for reproducible scenario generation.")
+    parser.add_argument("--constrain-control", action=argparse.BooleanOptionalAction, default=None,
+                        help="Enable (default) or disable (--no-constrain-control) the "
+                             "||u|| <= u_max control clipping.")
     return parser.parse_args()
 
 
@@ -57,6 +60,8 @@ def main() -> None:
     env = EnvConfig()
     sim = SimConfig()
     apf = APFConfig()
+    if args.constrain_control is not None:
+        apf.constrain_control = args.constrain_control
     controller = APFController(apf, env.plant_radius)
     simulation = SimulationEngine(env, sim)
     visualizer = Visualizer()

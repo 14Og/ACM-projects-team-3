@@ -13,15 +13,6 @@ class APFConfig:
     # Attractive / tracking gains
     k_att: float = 5
     k_v: float = 3.6
-    k_att_boost: float = 1.1       # tanh boost on k_att when far from target
-    err_boost_dist: float = 6.0    # distance scale for the boost
-
-    # Speed shaping / catch-up
-    k_speed: float = 2.8
-    speed_err_gain: float = 0.22
-    min_speed_ratio_to_target: float = 1.0
-    min_speed_abs: float = 0.15
-    k_catch: float = 2.2
 
     # Obstacle repulsion
     k_rep: float = 1.05
@@ -31,14 +22,14 @@ class APFConfig:
 
     # Control constraint
     constrain_control: bool = True
-    u_max: float = 10.0
+    u_max: float = 8.0
 
 
 @dataclass
 class SimConfig:
     """Simulation timing and integration parameters."""
-    steps_per_episode: int = 500
-    num_cycles: float = 1.5
+    steps_per_episode: int = 700
+    num_cycles: float = 2
 
 
 @dataclass
