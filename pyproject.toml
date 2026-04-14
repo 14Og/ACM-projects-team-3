@@ -9,4 +9,5 @@ dependencies = [
     "numpy",
     "pygame",
     "pyqt5>=5.15.11",
+    "scipy>=1.17.1",
 ]

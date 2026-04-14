@@ -8,33 +8,32 @@ from typing import List, Tuple
 
 @dataclass
 class APFConfig:
-    """APF controller parameters."""
+    """Lyapunov tracking + Control Barrier Function (CBF) parameters."""
 
     # Attractive / tracking gains
     k_att: float = 5
-    k_v: float = 1
+    k_v: float = 3
 
-    # Obstacle repulsion
-    k_rep: float = 1.05
-    influence_radius: float = 0.5  # distance from safety boundary where repulsion starts
-    safe_margin: float = 0.1
-    eps_dist: float = 1e-3
+    # Control Barrier Function (CBF) parameters
+    r_safe: float = 4.2  # safety radius: h(p) = ||p - c_i||^2 - r_safe^2
+    alpha: float = 1.0   # first-order CBF class K function parameter
+    alpha_1: float = 2.0  # second-order CBF damping coefficient
+    alpha_2: float = 1.0   # second-order CBF spring coefficient
 
     # Control constraint
     constrain_control: bool = True
-    u_max: float = 8.0
+    u_max: float = 10
 
     # Reference feedforward (a_ref term). Enables asymptotic tracking of
     # moving targets in the no-obstacle case; otherwise yields UUB.
-    feedforward: bool = False
+    feedforward: bool = True
 
 
 @dataclass
 class SimConfig:
     """Simulation timing and integration parameters."""
-    steps_per_episode: int = 500
+    steps_per_episode: int = 1500
     num_cycles: float = 2
-
 
 @dataclass
 class EnvConfig:
@@ -64,13 +63,14 @@ class EnvConfig:
     obstacle_radius: float = 1.8
     obstacle_bases: List[Tuple[float, float]] = field(
         default_factory=lambda: [
-            # (22.0, 28.0),   # inner – top of ellipse
-            # (22.0, 36.0),   # outer – top of ellipse
-            # (30.0, 22.0),   # inner – right of ellipse
-            # (42.0, 20.0),   # outer – right of ellipse
+            #(22.0, 28.0),   # inner – top of ellipse
+            (22.0, 34.0),   # outer – top of ellipse
+            #(30.0, 22.0),   # inner – right of ellipse
+            (37.0, 20.0),   # outer – right of ellipse
         ]
     )
-    obstacle_drift: float = 2.0 # max per-axis position drift each episode
+    obstacle_drift: float = 1.0 # max per-axis position drift each episode
+
 
 
 @dataclass

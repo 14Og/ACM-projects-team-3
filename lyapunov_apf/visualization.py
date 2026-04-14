@@ -43,22 +43,23 @@ class Visualizer:
         ellipse_x = env.cx + env.a * np.cos(theta_grid)
         ellipse_y = env.cy + env.b * np.sin(theta_grid)
 
-        obstacle_x = np.array([ox for ox, _, _ in episode.obstacles], dtype=float)
-        obstacle_y = np.array([oy for _, oy, _ in episode.obstacles], dtype=float)
-        obstacle_r = np.array([r for _, _, r in episode.obstacles], dtype=float)
-
         x_min = float(np.min(ellipse_x))
         x_max = float(np.max(ellipse_x))
         y_min = float(np.min(ellipse_y))
         y_max = float(np.max(ellipse_y))
 
-        if obstacle_x.size:
+        # Include obstacles in bounds
+        if episode.obstacles:
+            obstacle_x = np.array([ox for ox, _, _ in episode.obstacles], dtype=float)
+            obstacle_y = np.array([oy for _, oy, _ in episode.obstacles], dtype=float)
+            obstacle_r = np.array([r for _, _, r in episode.obstacles], dtype=float)
+
             x_min = min(x_min, float(np.min(obstacle_x - obstacle_r)))
             x_max = max(x_max, float(np.max(obstacle_x + obstacle_r)))
             y_min = min(y_min, float(np.min(obstacle_y - obstacle_r)))
             y_max = max(y_max, float(np.max(obstacle_y + obstacle_r)))
 
-        margin = max(env.plant_radius, env.target_radius, env.obstacle_radius) + 6.0
+        margin = max(env.plant_radius, env.target_radius) + 6.0
         return x_min - margin, x_max + margin, y_min - margin, y_max + margin
 
     @staticmethod
@@ -112,7 +113,7 @@ class Visualizer:
         ax_traj = fig.add_subplot(gs[:, 0])
         m_axes = [fig.add_subplot(gs[i, 1]) for i in range(5)]
 
-        fig.suptitle(f"Episode {ep_num} — Lyapunov APF Tracking", fontsize=17)
+        fig.suptitle(f"Episode {ep_num} — Lyapunov Tracking", fontsize=17)
 
         theta_grid = np.linspace(0.0, 2.0 * np.pi, 500)
         ex = env.cx + env.a * np.cos(theta_grid)
@@ -120,6 +121,7 @@ class Visualizer:
         ax_traj.plot(ex, ey, linestyle=(0, (1.5, 3.0)), linewidth=1.6,
                      color="#d9b454", alpha=0.55, label="Reference ellipse")
 
+        # Draw obstacles
         for ox, oy, r in episode.obstacles:
             ax_traj.add_patch(plt.Circle((ox, oy), r,
                                          facecolor="#f05b6a", edgecolor="#7a2630", alpha=0.7))

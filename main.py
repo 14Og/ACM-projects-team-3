@@ -41,9 +41,10 @@ def print_summary(data: dict, env: EnvConfig, episode, seed: int | None) -> None
     print(f"  V_total final        : {V[-1]:.4f}")
 
 
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Lyapunov APF tracking and obstacle-avoidance demo."
+        description="Lyapunov-based trajectory tracking demo on an elliptical reference path."
     )
     parser.add_argument("--seed", type=int, default=None,
                         help="Random seed for reproducible scenario generation.")

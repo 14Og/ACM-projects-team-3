@@ -35,7 +35,25 @@ class Plant:
         return np.array([1.0, 0.0], dtype=float)
 
     def step(self, u: np.ndarray, dt: float) -> None:
-        """Advance the plant state by one Euler integration step."""
-        self.v = self.v + dt * u
-        self.p = self.p + dt * self.v
+        """Advance the plant state by one RK4 integration step.
+        
+        System dynamics: p' = v, v' = u
+        Uses constant control input u throughout the integration step.
+        """
+        # RK4 stages for p' = v, v' = u
+        k1_p = self.v.copy()
+        k1_v = u.copy()
+        
+        k2_p = self.v + 0.5 * dt * k1_v
+        k2_v = u.copy()
+        
+        k3_p = self.v + 0.5 * dt * k2_v
+        k3_v = u.copy()
+        
+        k4_p = self.v + dt * k3_v
+        k4_v = u.copy()
+        
+        # Integrate using RK4 formula
+        self.p = self.p + (dt / 6.0) * (k1_p + 2.0 * k2_p + 2.0 * k3_p + k4_p)
+        self.v = self.v + (dt / 6.0) * (k1_v + 2.0 * k2_v + 2.0 * k3_v + k4_v)
 
