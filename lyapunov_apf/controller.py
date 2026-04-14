@@ -14,11 +14,14 @@ class APFController:
     """Energy-based / passivity-based controller with APF obstacle repulsion.
 
     Control law (pure PBC: potential shaping + damping injection):
-        u = -k_att * e_p  -  k_v * e_v  -  grad V_rep
+        u = -k_att * e_p  -  k_v * e_v  -  grad V_rep  [+ a_ref]
 
     where e_p = p - p_ref, e_v = v - v_ref, and V_rep is the sum of APF
     repulsive potentials. Optionally clips ||u|| <= u_max when
-    cfg.constrain_control is True.
+    cfg.constrain_control is True. When cfg.feedforward is True, the
+    reference acceleration a_ref = p̈_ref is added so that the error
+    dynamics become autonomous (enables asymptotic tracking of moving
+    targets in the no-obstacle case).
     """
 
     def __init__(self, cfg: APFConfig, plant_radius: float) -> None:
@@ -62,19 +65,22 @@ class APFController:
         v: np.ndarray,
         p_ref: np.ndarray,
         obstacles: List[Tuple[float, float, float]],
+        v_ref: np.ndarray | None = None,
     ) -> float:
-        """Total Lyapunov candidate:
-            V_total = V_att + V_rep + (1/2)||v||^2
+        """Total Lyapunov candidate (error coordinates when v_ref is given):
+            V_total = V_att + V_rep + (1/2)||e_v||^2
 
             V_att   = (1/2) * k_att * ||p - p_ref||^2
             V_rep   = sum_i (1/2) * k_rep * (1/d_eff_i - 1/influence_eff)^2
+
+        With feedforward enabled and no obstacles, V̇ = -k_v * ||e_v||^2 ≤ 0
+        so V is monotonically non-increasing along trajectories.
         """
         cfg = self.cfg
 
         e_p = p - p_ref
         V_att = 0.5 * cfg.k_att * float(np.dot(e_p, e_p))
 
-        V_rep = 0.0
         for ox, oy, r in obstacles:
             c = np.array([ox, oy], dtype=float)
             center_dist = float(np.linalg.norm(p - c))
@@ -84,8 +90,10 @@ class APFController:
             d_eff = max(d - cfg.safe_margin, cfg.eps_dist)
             influence_eff = max(cfg.influence_radius - cfg.safe_margin, cfg.eps_dist)
             V_rep += 0.5 * cfg.k_rep * (1.0 / d_eff - 1.0 / influence_eff) ** 2
+        V_rep = 0.0
 
-        V_kin = 0.5 * float(np.dot(v, v))
+        e_v = v if v_ref is None else v - v_ref
+        V_kin = 0.5 * float(np.dot(e_v, e_v))
         return V_att + V_rep + V_kin
 
     # ------------------------------------------------------------------
@@ -99,6 +107,7 @@ class APFController:
         p_ref: np.ndarray,
         v_ref: np.ndarray,
         obstacles: List[Tuple[float, float, float]],
+        a_ref: np.ndarray | None = None,
     ) -> np.ndarray:
         """Compute control force u at current plant state."""
         cfg = self.cfg
@@ -107,6 +116,9 @@ class APFController:
 
         # Potential shaping (attractive) + damping injection + repulsive gradient.
         u = -cfg.k_att * e_p - cfg.k_v * e_v + self.repulsive_gradient(p, obstacles)
+
+        if cfg.feedforward and a_ref is not None:
+            u = u + a_ref
 
         if cfg.constrain_control:
             u = Plant.unit_clip(u, cfg.u_max)

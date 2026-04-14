@@ -50,6 +50,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--constrain-control", action=argparse.BooleanOptionalAction, default=None,
                         help="Enable (default) or disable (--no-constrain-control) the "
                              "||u|| <= u_max control clipping.")
+    parser.add_argument("--feedforward", action=argparse.BooleanOptionalAction, default=None,
+                        help="Add reference acceleration a_ref to control (asymptotic "
+                             "tracking of moving targets in the no-obstacle case).")
     return parser.parse_args()
 
 
@@ -62,6 +65,8 @@ def main() -> None:
     apf = APFConfig()
     if args.constrain_control is not None:
         apf.constrain_control = args.constrain_control
+    if args.feedforward is not None:
+        apf.feedforward = args.feedforward
     controller = APFController(apf, env.plant_radius)
     simulation = SimulationEngine(env, sim)
     visualizer = Visualizer()

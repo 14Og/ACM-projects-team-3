@@ -46,6 +46,15 @@ class SimulationEngine:
         )
         return p_ref, v_ref
 
+    def reference_acceleration(self, t: float, episode: EpisodeState) -> np.ndarray:
+        """Reference acceleration a_ref = p̈_ref on the ellipse at time t."""
+        theta = episode.theta0 + episode.omega * t
+        return np.array(
+            [-self.env.a * episode.omega ** 2 * np.cos(theta),
+             -self.env.b * episode.omega ** 2 * np.sin(theta)],
+            dtype=float,
+        )
+
     def _safe_from_obstacles(
         self,
         p: np.ndarray,
@@ -182,12 +191,13 @@ class SimulationEngine:
         p_arr[0] = plant.p
         v_arr[0] = plant.v
         p_ref_arr[0], v_ref_arr[0] = self.reference_state(t[0], episode)
-        V_arr[0] = controller.lyapunov_value(plant.p, plant.v, p_ref_arr[0], episode.obstacles)
+        V_arr[0] = controller.lyapunov_value(plant.p, plant.v, p_ref_arr[0], episode.obstacles, v_ref_arr[0])
 
         for k in range(n - 1):
             p_ref_arr[k], v_ref_arr[k] = self.reference_state(t[k], episode)
+            a_ref = self.reference_acceleration(t[k], episode)
             u = controller.compute_force(
-                plant.p, plant.v, p_ref_arr[k], v_ref_arr[k], episode.obstacles
+                plant.p, plant.v, p_ref_arr[k], v_ref_arr[k], episode.obstacles, a_ref
             )
             u_arr[k] = u
 
@@ -200,11 +210,12 @@ class SimulationEngine:
             v_arr[k + 1] = plant.v
             p_ref_arr[k + 1], v_ref_arr[k + 1] = self.reference_state(t[k + 1], episode)
             V_arr[k + 1] = controller.lyapunov_value(
-                plant.p, plant.v, p_ref_arr[k + 1], episode.obstacles
+                plant.p, plant.v, p_ref_arr[k + 1], episode.obstacles, v_ref_arr[k + 1]
             )
 
         u_arr[-1] = controller.compute_force(
-            plant.p, plant.v, p_ref_arr[-1], v_ref_arr[-1], episode.obstacles
+            plant.p, plant.v, p_ref_arr[-1], v_ref_arr[-1], episode.obstacles,
+            self.reference_acceleration(t[-1], episode),
         )
 
         return {
@@ -216,6 +227,7 @@ class SimulationEngine:
             "v_ref": v_ref_arr,
             "V": V_arr,
             "err": np.linalg.norm(p_arr - p_ref_arr, axis=1),
+            "err_v": np.linalg.norm(v_arr - v_ref_arr, axis=1),
             "speed": np.linalg.norm(v_arr, axis=1),
             "accel": np.linalg.norm(u_arr, axis=1),
         }

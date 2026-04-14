@@ -12,7 +12,7 @@ class APFConfig:
 
     # Attractive / tracking gains
     k_att: float = 5
-    k_v: float = 3.6
+    k_v: float = 1
 
     # Obstacle repulsion
     k_rep: float = 1.05
@@ -24,11 +24,15 @@ class APFConfig:
     constrain_control: bool = True
     u_max: float = 8.0
 
+    # Reference feedforward (a_ref term). Enables asymptotic tracking of
+    # moving targets in the no-obstacle case; otherwise yields UUB.
+    feedforward: bool = False
+
 
 @dataclass
 class SimConfig:
     """Simulation timing and integration parameters."""
-    steps_per_episode: int = 700
+    steps_per_episode: int = 500
     num_cycles: float = 2
 
 
@@ -60,10 +64,10 @@ class EnvConfig:
     obstacle_radius: float = 1.8
     obstacle_bases: List[Tuple[float, float]] = field(
         default_factory=lambda: [
-            (22.0, 28.0),   # inner – top of ellipse
-            (22.0, 36.0),   # outer – top of ellipse
-            (30.0, 22.0),   # inner – right of ellipse
-            (42.0, 20.0),   # outer – right of ellipse
+            # (22.0, 28.0),   # inner – top of ellipse
+            # (22.0, 36.0),   # outer – top of ellipse
+            # (30.0, 22.0),   # inner – right of ellipse
+            # (42.0, 20.0),   # outer – right of ellipse
         ]
     )
     obstacle_drift: float = 2.0 # max per-axis position drift each episode

@@ -86,9 +86,9 @@ class Visualizer:
         n_steps = len(p)
         steps = np.arange(n_steps)
 
-        raw_series = [data["speed"], data["accel"], data["err"], data["V"]]
-        y_labels = ["Speed |v|", "Accel |u|", "Error ||e_p||", r"$V_\mathrm{total}$"]
-        m_colors = ["#1f88d8", "#d64f4f", "#2f9d67", "#9b59b6"]
+        raw_series = [data["speed"], data["accel"], data["err"], data["err_v"], data["V"]]
+        y_labels = ["Speed |v|", "Accel |u|", "Error ||e_p||", "Error ||e_v||", r"$V_\mathrm{total}$"]
+        m_colors = ["#1f88d8", "#d64f4f", "#2f9d67", "#e39b2f", "#9b59b6"]
         y_caps = [self._display_cap(series) for series in raw_series]
         y_series = [self._display_series(series, cap) for series, cap in zip(raw_series, y_caps)]
         x_min, x_max, y_min, y_max = self._scene_bounds(env, episode)
@@ -102,15 +102,15 @@ class Visualizer:
         fig.canvas.manager.set_window_title(f"Episode {ep_num}")
 
         gs = gridspec.GridSpec(
-            4, 2,
+            5, 2,
             width_ratios=[1.5, 1],
-            hspace=0.45,
+            hspace=0.5,
             wspace=0.3,
             left=0.05, right=0.97,
             top=0.93, bottom=0.07,
         )
         ax_traj = fig.add_subplot(gs[:, 0])
-        m_axes = [fig.add_subplot(gs[i, 1]) for i in range(4)]
+        m_axes = [fig.add_subplot(gs[i, 1]) for i in range(5)]
 
         fig.suptitle(f"Episode {ep_num} — Lyapunov APF Tracking", fontsize=17)
 
