@@ -7,7 +7,7 @@ from typing import List, Tuple
 import numpy as np
 
 from .config import EnvConfig, EpisodeState, SimConfig
-from .controller import APFController
+from .controller import CLFCBFController
 from .plant import Plant
 
 
@@ -162,7 +162,7 @@ class SimulationEngine:
     def run_simulation(
         self,
         episode: EpisodeState,
-        controller: APFController,
+        controller: CLFCBFController,
     ) -> dict[str, np.ndarray]:
         """Integrate the closed-loop system and return trajectory data."""
         n = self.sim.steps_per_episode

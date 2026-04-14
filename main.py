@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from lyapunov_apf.config import APFConfig, EnvConfig, SimConfig
-from lyapunov_apf.controller import APFController
+from lyapunov_apf.controller import CLFCBFController
 from lyapunov_apf.simulation import SimulationEngine
 from lyapunov_apf.visualization import Visualizer
 
@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
                         help="Random seed for reproducible scenario generation.")
     parser.add_argument("--constrain-control", action=argparse.BooleanOptionalAction, default=None,
                         help="Enable (default) or disable (--no-constrain-control) the "
-                             "||u|| <= u_max control clipping.")
+                             "box constraint -u_max <= u_j <= u_max.")
     parser.add_argument("--feedforward", action=argparse.BooleanOptionalAction, default=None,
                         help="Add reference acceleration a_ref to control (asymptotic "
                              "tracking of moving targets in the no-obstacle case).")
@@ -68,7 +68,7 @@ def main() -> None:
         apf.constrain_control = args.constrain_control
     if args.feedforward is not None:
         apf.feedforward = args.feedforward
-    controller = APFController(apf, env.plant_radius)
+    controller = CLFCBFController(apf, env.plant_radius)
     simulation = SimulationEngine(env, sim)
     visualizer = Visualizer()
 
