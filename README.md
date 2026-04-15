@@ -196,6 +196,7 @@ HOCBF condition
 \ddot h_i + \alpha_1 \,\dot h_i + \alpha_2 \, h_i \;\ge\; 0,
 \qquad
 s^2 + \alpha_1 s + \alpha_2 \text{ Hurwitz},
+\quad \alpha_1 > 0, \quad \alpha_2 > 0
 ```
 
 which is **linear** in $`u`$:
