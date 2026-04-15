@@ -1,0 +1,86 @@
+"""Configuration dataclasses for the Lyapunov APF project."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import List, Tuple
+
+
+@dataclass
+class APFConfig:
+    """Lyapunov tracking + Control Barrier Function (CBF) parameters."""
+
+    # Attractive / tracking gains
+    k_att: float = 5
+    k_v: float = 3
+
+    # Control Barrier Function (HOCBF) parameters.
+    # Per-obstacle safety radius: r_safe_i = obstacle_radius_i + plant_radius + safe_margin.
+    # alpha_1, alpha_2 must give a Hurwitz polynomial s^2 + alpha_1 s + alpha_2.
+    safe_margin: float = 0.4
+    alpha_1: float = 2.0
+    alpha_2: float = 1.0
+
+    # Control constraint
+    constrain_control: bool = True
+    u_max: float = 10
+
+    # Reference feedforward (a_ref term). Enables asymptotic tracking of
+    # moving targets in the no-obstacle case; otherwise yields UUB.
+    feedforward: bool = True
+
+
+@dataclass
+class SimConfig:
+    """Simulation timing and integration parameters."""
+    steps_per_episode: int = 500
+    num_cycles: float = 2
+
+@dataclass
+class EnvConfig:
+    """Environment: reference ellipse, plant geometry, spawn rules, obstacles."""
+
+    # Reference ellipse  (cx + a*cos(theta),  cy + b*sin(theta))
+    cx: float = 22.0
+    cy: float = 20.0
+    a: float = 14.0
+    b: float = 10.0
+    omega_range: Tuple[float, float] = (0.16, 0.32)
+
+    # Plant geometry
+    plant_radius: float = 1.8   # plant radius
+    target_radius: float = 1.4
+
+    # Plant spawn constraints
+    plant_spawn_scale_range: Tuple[float, float] = (1.20, 1.85)
+    plant_spawn_clearance: float = 1.0
+    target_obstacle_clearance: float = 0.1
+    min_target_plant_start_distance: float = 7.0
+
+
+    # Obstacles: shared radius + base (x, y) positions.
+    # Each episode positions are perturbed by a uniform draw in
+    # [-obstacle_drift, +obstacle_drift] per axis; radius stays fixed.
+    obstacle_radius: float = 1.8
+    obstacle_bases: List[Tuple[float, float]] = field(
+        default_factory=lambda: [
+            (22.0, 28.0),   # inner – top of ellipse
+            (22.0, 34.0),   # outer – top of ellipse
+            (30.0, 22.0),   # inner – right of ellipse
+            (37.0, 20.0),   # outer – right of ellipse
+        ]
+    )
+    obstacle_drift: float = 1.0 # max per-axis position drift each episode
+
+
+
+@dataclass
+class EpisodeState:
+    """Fully randomised state for one simulation episode."""
+
+    theta0: float                               # target start angle on ellipse
+    omega: float                                # angular velocity of target
+    t_final: float                              # simulation horizon
+    p0: Tuple[float, float]                     # plant initial position
+    v0: Tuple[float, float]                     # plant initial velocity
+    obstacles: List[Tuple[float, float, float]] # (x, y, radius) after drift
