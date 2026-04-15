@@ -301,9 +301,7 @@ here because they shaped the final implementation.
    guarantee is uniform ultimate boundedness. Adding $`a_r`$ cancels the
    drift term and produces the autonomous error system
 
-   ```math
-   \ddot e_p + k_v\,\dot e_p + k_p\,e_p \;=\; 0,
-   ```
+   $`\ddot e_p + k_v\,\dot e_p + k_p\,e_p \;=\; 0,`$
 
    which gives global asymptotic stability via LaSalle. Toggle with
    `--feedforward`.
