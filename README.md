@@ -32,17 +32,17 @@ We follow the course notation.
 
 For this project the state is
 
-$$
+```math
 s \;=\; \begin{bmatrix} p \\ v \end{bmatrix} \in \mathbb{R}^4,
 \qquad p,\,v \in \mathbb{R}^2,
-$$
+```
 
 the action is $a = u \in \mathbb{R}^2$, and the plant is the planar
 double integrator
 
-$$
+```math
 \dot p = v, \qquad \dot v = u.
-$$
+```
 
 This is a deterministic, continuous-time, **non-autonomous** control
 system (the reference is time-varying), satisfying the course's
@@ -55,29 +55,29 @@ reference $p_r(t)$.
 
 The reference trajectory is the ellipse
 
-$$
+```math
 p_r(t) \;=\;
 \begin{bmatrix}
 c_x + a\,\cos(\theta_0 + \omega t) \\
 c_y + b\,\sin(\theta_0 + \omega t)
 \end{bmatrix},
-$$
+```
 
 with derivatives $v_r = \dot p_r$ and $a_r = \ddot p_r$.
 
 Tracking errors:
 
-$$
+```math
 e_p \;=\; p - p_r,
 \qquad
 e_v \;=\; v - v_r.
-$$
+```
 
 The plant must asymptotically track the reference,
 
-$$
+```math
 \|e_p(t)\| + \|e_v(t)\| \;\xrightarrow[t \to \infty]{}\; 0,
-$$
+```
 
 while remaining outside a finite collection of circular obstacles
 $\{(c_i, r_i)\}_{i=1}^{N_{\text{obs}}}$ and respecting the box control
@@ -127,31 +127,31 @@ The implementation is in
 
 Pick the Lyapunov function candidate
 
-$$
+```math
 L(e_p, e_v) \;=\; \tfrac{1}{2}\,k_p\,\|e_p\|^2 \;+\; \tfrac{1}{2}\,\|e_v\|^2.
-$$
+```
 
 Bounds with $\kappa_{\text{low}}, \kappa_{\text{up}} \in \mathcal{K}_\infty$ are immediate
 ($L$ is a positive-definite quadratic form on the error coordinates).
 Choose the nominal action
 
-$$
+```math
 u_{\text{des}} \;=\; a_r \;-\; k_p\,e_p \;-\; k_v\,e_v.
-$$
+```
 
 The error dynamics become autonomous,
 
-$$
+```math
 \dot e_p = e_v,
 \qquad
 \dot e_v = -\,k_p\,e_p - k_v\,e_v,
-$$
+```
 
 and the Lyapunov derivative is
 
-$$
+```math
 \dot L \;=\; -\,k_v\,\|e_v\|^2 \;\le\; 0.
-$$
+```
 
 Applying LaSalle's invariance principle to the largest invariant subset
 of $\{\dot L = 0\} = \{e_v = 0\}$ — on which $\dot e_v = 0$ forces
@@ -163,60 +163,60 @@ with $\beta \in \mathcal{KL}$.
 
 Per obstacle $i$, define the per-obstacle safety radius
 
-$$
+```math
 r_{s,i} \;=\; r_{\text{obs},i} \;+\; r_{\text{plant}} \;+\; \delta_{\text{safe}}.
-$$
+```
 
 Take the barrier function
 
-$$
+```math
 B_i(p) \;=\; r_{s,i}^2 \;-\; \|p - c_i\|^2,
-$$
+```
 
 so the safe set is $\mathbb{S}_{\text{safe},i} = \{ s : B_i(p) \le 0 \}$.
 The implementation works with $h_i := -B_i \ge 0$ (the sign convention
 used in stability.md):
 
-$$
+```math
 h_i(p) = \|p - c_i\|^2 - r_{s,i}^2,
 \qquad h_i \ge 0 \;\Leftrightarrow\; s \in \mathbb{S}_{\text{safe},i}.
-$$
+```
 
 Because $h_i$ has relative degree 2 with respect to $u$, we use the
 HOCBF condition
 
-$$
+```math
 \ddot h_i + \alpha_1 \,\dot h_i + \alpha_2 \, h_i \;\ge\; 0,
 \qquad
 s^2 + \alpha_1 s + \alpha_2 \text{ Hurwitz},
-$$
+```
 
 which is **linear** in $u$:
 
-$$
+```math
 2\,(p - c_i)^{\!\top} u
 \;\ge\;
 -2\,\|v\|^2 \;-\; 2\alpha_1 (p - c_i)^{\!\top} v \;-\; \alpha_2\, h_i.
-$$
+```
 
 ### 3. Slack-relaxed CLF–CBF–QP
 
 The final controller is the convex program
 
-$$
+```math
 \min_{u,\;s_{\text{slk}}}\;
 \tfrac{1}{2}\,\|u - u_{\text{des}}\|^2 \;+\; \rho\, s_{\text{slk}}
-$$
+```
 
 subject to
 
-$$
+```math
 A\,u + s_{\text{slk}}\,\mathbf{1} \;\ge\; b,
 \qquad
 |u_j| \le u_{\max},
 \qquad
 s_{\text{slk}} \ge 0,
-$$
+```
 
 where each row of $(A, b)$ is one HOCBF constraint, and $\rho \gg 0$
 ensures the slack is used only when no strictly safe control exists.
@@ -238,9 +238,9 @@ We solve with `scipy.optimize.minimize` using `LinearConstraint` and
 
 Repulsive potential
 
-$$
+```math
 L_{\text{rep},i} \;=\; \tfrac{1}{2}\,k_{\text{rep}}\,\Bigl(\tfrac{1}{d_{\text{eff},i}} - \tfrac{1}{I_{\text{eff}}}\Bigr)^2
-$$
+```
 
 added to the attractive controller
 $u = -k_p e_p - k_v e_v - \nabla L_{\text{rep}}$.
@@ -255,9 +255,9 @@ We abandoned this because:
 
 Removing all heuristics leaves the textbook passivity-based law
 
-$$
+```math
 u \;=\; a_r \;-\; k_p\,e_p \;-\; k_v\,e_v.
-$$
+```
 
 With the **error-coordinate** Lyapunov function $L = \tfrac{1}{2} k_p \|e_p\|^2 + \tfrac{1}{2}\|e_v\|^2$
 the closed loop becomes autonomous and $L$ is monotonically
@@ -294,9 +294,9 @@ here because they shaped the final implementation.
    guarantee is uniform ultimate boundedness. Adding $a_r$ cancels the
    drift term and produces the autonomous error system
 
-   $$
+   ```math
    \ddot e_p + k_v\,\dot e_p + k_p\,e_p \;=\; 0,
-   $$
+   ```
 
    which gives global asymptotic stability via LaSalle. Toggle with
    `--feedforward`.
