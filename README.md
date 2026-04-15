@@ -101,6 +101,11 @@ $`L_{\text{tot}}`$ in the bottom-right panel descends monotonically.
 
 ![Pure Lyapunov tracking](assets/gif/lyapunov_stability.gif)
 
+Figure 1. Tracking of a moving target on an elliptical trajectory using the nominal Lyapunov-based controller. The left panel shows the motion in the plane, and the right panel shows speed, control effort, tracking errors, and the total Lyapunov function.
+
+Analysis.
+After the initial transient, both position and velocity errors decrease, indicating convergence to the moving reference. The monotonic decay of the Lyapunov function confirms asymptotic stability in the error coordinates.
+
 ### CLF + HOCBF safety filter, four obstacles
 
 The QP overrides the nominal control only where the safety constraint
@@ -108,20 +113,28 @@ is active.
 
 ![CLF + HOCBF QP](assets/gif/clf_cbf_qp.gif)
 
-### Constrained $`u_{\max}`$, feasible
+Figure 2. Safe elliptical trajectory tracking in the presence of obstacles using the Lyapunov-based controller with a barrier-function safety filter. The left panel shows the avoidance motion, and the right panel shows the corresponding dynamic metrics.
 
-Tight box bound on $`u`$ with the QP still strictly feasible
-($`s^\star = 0`$).
+Analysis.
+The plant deviates from the reference near obstacles and returns to tracking afterward. Since the barrier function is active, safety is prioritized over exact tracking, so the Lyapunov function is no longer globally monotone; the result is practically stable safe tracking.
+
+### Initial Lyapunov tracking under control constraints
 
 ![Constrained, feasible](assets/gif/constrained.gif)
 
-### Constrained $`u_{\max}`$, stalled
+Figure 3. Elliptical trajectory tracking with obstacle avoidance using the initial Lyapunov formulation under constrained control. The left panel shows the trajectory, and the right panel shows the main response metrics.
 
-Same scenario with $`u_{\max}`$ too small to satisfy the CBF strictly: the
-slack $`s^\star > 0`$ keeps the QP feasible but the plant gets blocked
-near the obstacle.
+Analysis.
+This initial solution remains visually workable, but tracking quality degrades in constrained regions. Error growth, control saturation, and peaks in the Lyapunov function indicate problematic behavior and the absence of a strict stability guarantee.
+
+### Trapping regime in the initial Lyapunov solution
 
 ![Constrained, stalled](assets/gif/constrained_stalled.gif)
+
+Figure 4. Severe trapping case of the initial Lyapunov-APF obstacle-avoidance solution during elliptical trajectory tracking. The left panel shows the plant motion, and the right panel shows the corresponding metrics.
+
+Analysis.
+In this regime, the plant becomes trapped near the obstacles and fails to recover the reference trajectory. The large error growth, control saturation, and extreme Lyapunov spikes show that the initial Lyapunov-APF formulation is not reliable as a final solution.
 
 ---
 
