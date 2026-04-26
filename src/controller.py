@@ -213,6 +213,7 @@ class AdaptiveLyapunovController:
         damping_hat = self.damping_hat.copy()
         bias_hat = self.bias_hat.copy()
         tau_raw = inertia_hat * ddq_r + damping_hat * dq - bias_hat - self.cfg.sliding_gain * sliding
+        #print(tau_raw)
         tau = np.clip(tau_raw, -self.torque_limits, self.torque_limits)
 
         self.inertia_hat = np.clip(
@@ -313,6 +314,89 @@ class PlainPDController:
             inertia_hat=np.full_like(q, np.nan, dtype=float),
             damping_hat=np.full_like(q, np.nan, dtype=float),
             bias_hat=np.full_like(q, np.nan, dtype=float),
+            saturated=bool(np.any(np.abs(tau_raw - tau) > 1e-9)),
+        )
+
+
+class RobustAdaptiveController:
+    """Robust adaptive controller with sliding mode: tau = M*ddq_r + D*dq - b_hat - K*s - rho*sat(s/epsilon)"""
+
+    name = "robust"
+
+    def __init__(self, cfg: AdaptiveControllerConfig, torque_limits: np.ndarray) -> None:
+        self.cfg = cfg
+        self.torque_limits = np.asarray(torque_limits, dtype=float)
+        self.inertia_hat = cfg.initial_inertia_hat.copy()
+        self.damping_hat = cfg.initial_damping_hat.copy()
+        self.bias_hat = cfg.initial_bias_hat.copy()
+        # Robust gains
+        self.K = np.array(cfg.sliding_gain) * 2.0  # Higher gain for robustness
+        self.rho = 5.0  # Robust boundary layer gain
+        self.epsilon = 0.5  # Sliding surface boundary layer width
+
+    def reset(self) -> None:
+        self.inertia_hat = self.cfg.initial_inertia_hat.copy()
+        self.damping_hat = self.cfg.initial_damping_hat.copy()
+        self.bias_hat = self.cfg.initial_bias_hat.copy()
+
+    def _sat(self, x: np.ndarray) -> np.ndarray:
+        """Saturation function for sliding mode."""
+        return np.where(
+            np.abs(x) > 1.0,
+            np.sign(x),
+            x,
+        )
+
+    def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
+        q_error, dq_error, sliding, dq_r, ddq_r = _filtered_errors(
+            q,
+            dq,
+            ref,
+            self.cfg.lambda_gain,
+        )
+        inertia_hat = self.inertia_hat.copy()
+        damping_hat = self.damping_hat.copy()
+        bias_hat = self.bias_hat.copy()
+
+        # Robust control law: -K*s - rho*sat(s/epsilon)
+        sat_term = self.rho * self._sat(sliding / self.epsilon)
+        tau_raw = (
+            inertia_hat * ddq_r
+            + damping_hat * dq
+            - bias_hat
+            - self.K * sliding
+            - sat_term
+        )
+        tau = np.clip(tau_raw, -self.torque_limits, self.torque_limits)
+
+        # Adaptive laws (same as adaptive controller)
+        self.inertia_hat = np.clip(
+            inertia_hat + dt * (-self.cfg.gamma_inertia * sliding * ddq_r),
+            self.cfg.inertia_bounds[0],
+            self.cfg.inertia_bounds[1],
+        )
+        self.damping_hat = np.clip(
+            damping_hat + dt * (-self.cfg.gamma_damping * sliding * dq),
+            self.cfg.damping_bounds[0],
+            self.cfg.damping_bounds[1],
+        )
+        self.bias_hat = np.clip(
+            bias_hat + dt * (self.cfg.gamma_bias * sliding),
+            self.cfg.bias_bounds[0],
+            self.cfg.bias_bounds[1],
+        )
+
+        return ControlInfo(
+            tau_raw=tau_raw,
+            tau=tau,
+            q_error=q_error,
+            dq_error=dq_error,
+            sliding_error=sliding,
+            dq_r=dq_r,
+            ddq_r=ddq_r,
+            inertia_hat=inertia_hat,
+            damping_hat=damping_hat,
+            bias_hat=bias_hat,
             saturated=bool(np.any(np.abs(tau_raw - tau) > 1e-9)),
         )
 

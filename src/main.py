@@ -15,7 +15,7 @@ from .config import load_config
 from .controller import AdaptiveLyapunovController, FixedLyapunovController, PlainPDController
 from .simulation import run_rollout, save_rollout_data_csv, summarize_rollout
 from .system import PlanarArm
-from .visualization import save_all_plots, save_animation
+from .visualization import save_all_plots, save_animation, show_live_animation
 
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "default.json"
@@ -31,6 +31,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-plots", action="store_true", help="Skip PNG plot generation.")
     parser.add_argument("--no-animation", action="store_true", help="Skip GIF animation generation.")
     parser.add_argument("--animation-stride", type=int, default=15, help="Use every Nth sample.")
+    parser.add_argument(
+        "--animation",
+        action="store_true",
+        help="Show real-time animation during simulation (requires interactive display).",
+    )
+    parser.add_argument(
+        "--no-obstacles",
+        action="store_true",
+        help="Disable moving obstacles in simulation.",
+    )
+    parser.add_argument(
+        "--animation-fps",
+        type=int,
+        default=30,
+        help="Frames per second for live animation (default: 30).",
+    )
+    parser.add_argument(
+        "--robust",
+        action="store_true",
+        help="Use robust adaptive controller with sliding mode term (default: use adaptive).",
+    )
     return parser.parse_args()
 
 
@@ -41,6 +62,21 @@ def main() -> None:
         config = replace(config, simulation=replace(config.simulation, duration=float(args.duration)))
     if args.dt is not None:
         config = replace(config, simulation=replace(config.simulation, dt=float(args.dt)))
+    if args.no_obstacles:
+        from .config import ObstacleConfig
+        import numpy as np
+        config = replace(
+            config,
+            obstacles=ObstacleConfig(
+                radius=config.obstacles.radius,
+                base_centers=np.empty((0, 2)),  # No obstacles
+                amplitudes=np.empty((0, 2)),
+                omegas=np.empty(0),
+                phases=np.empty(0),
+            ),
+        )
+
+    from .controller import RobustAdaptiveController
 
     controllers = {
         "adaptive": AdaptiveLyapunovController(
@@ -56,6 +92,13 @@ def main() -> None:
             config.dynamics.torque_limits,
         ),
     }
+
+    # Replace adaptive with robust if --robust flag is set
+    if args.robust:
+        controllers["adaptive"] = RobustAdaptiveController(
+            config.adaptive_controller,
+            config.dynamics.torque_limits,
+        )
 
     rollouts = {name: run_rollout(config, controller) for name, controller in controllers.items()}
     metrics = {name: summarize_rollout(config, rollout) for name, rollout in rollouts.items()}
@@ -79,7 +122,15 @@ def main() -> None:
         )
 
     animation_path: Path | None = None
-    if not args.no_animation:
+    if args.animation:
+        # Live real-time animation mode
+        show_live_animation(
+            config=config,
+            arm=arm,
+            rollouts=rollouts,
+            fps=args.animation_fps,
+        )
+    elif not args.no_animation:
         animation_path = save_animation(
             config=config,
             arm=arm,

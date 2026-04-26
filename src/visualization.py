@@ -20,12 +20,14 @@ COLORS = {
     "plain_pd": "#5F3DC4",
     "reference": "#1C7ED6",
     "target": "#F08C00",
+    "robust": "#E67700",
 }
 
 LABELS = {
     "adaptive": "adaptive",
     "fixed_lyapunov": "fixed Lyapunov",
     "plain_pd": "plain PD",
+    "robust": "robust",
 }
 
 
@@ -153,6 +155,111 @@ def save_animation(
     ani.save(path, writer=animation.PillowWriter(fps=fps))
     plt.close(fig)
     return path
+
+
+def show_live_animation(
+    *,
+    config: ProjectConfig,
+    arm: PlanarArm,
+    rollouts: dict[str, Rollout],
+    fps: int = 30,
+) -> None:
+    """Display real-time animation of the manipulator during simulation."""
+    import matplotlib
+    matplotlib.use("TkAgg")  # Use interactive backend
+
+    adaptive = rollouts["adaptive"]
+    fixed = rollouts["fixed_lyapunov"]
+    pd = rollouts["plain_pd"]
+
+    fig, (ax_scene, ax_lyapunov) = plt.subplots(
+        1,
+        2,
+        figsize=(13, 6),
+        gridspec_kw={"width_ratios": [1.15, 1.0]},
+    )
+    fig.suptitle("3-DOF Manipulator: Adaptive Control vs Lyapunov Baselines (Live)", fontsize=14)
+
+    _setup_scene_axes(config, ax_scene)
+    (line_adaptive,) = ax_scene.plot([], [], "-o", lw=3, color=COLORS["adaptive"], label="adaptive")
+    (line_fixed,) = ax_scene.plot([], [], "-o", lw=2, color=COLORS["fixed_lyapunov"], label="fixed Lyapunov")
+    (line_pd,) = ax_scene.plot([], [], "-o", lw=2, color=COLORS["plain_pd"], label="plain PD")
+    (trace_adaptive,) = ax_scene.plot([], [], lw=1.4, color=COLORS["adaptive"], alpha=0.7)
+    (trace_fixed,) = ax_scene.plot([], [], lw=1.1, color=COLORS["fixed_lyapunov"], alpha=0.55)
+    (trace_pd,) = ax_scene.plot([], [], lw=1.1, color=COLORS["plain_pd"], alpha=0.55)
+    (target_dot,) = ax_scene.plot([], [], "o", ms=8, color=COLORS["target"], label="moving target")
+    obstacle_patches = [
+        Circle((0.0, 0.0), config.obstacles.radius, fc="#868E96", ec="#343A40", alpha=0.4)
+        for _ in range(config.obstacles.base_centers.shape[0])
+    ]
+    for patch in obstacle_patches:
+        ax_scene.add_patch(patch)
+    text = ax_scene.text(0.02, 0.98, "", transform=ax_scene.transAxes, va="top")
+    ax_scene.legend(loc="lower left", fontsize=9)
+
+    lyapunov_series = {
+        "adaptive": adaptive.tracking_lyapunov,
+        "fixed_lyapunov": fixed.tracking_lyapunov,
+        "plain_pd": pd.tracking_lyapunov,
+    }
+    normalized_lyapunov = {
+        key: _normalize_positive(series) for key, series in lyapunov_series.items()
+    }
+    for key, series in normalized_lyapunov.items():
+        ax_lyapunov.plot(
+            rollouts[key].time,
+            series,
+            color=COLORS[key],
+            lw=1.4,
+            label=f"{LABELS[key]} V_e / V_e(0)",
+        )
+    time_marker = ax_lyapunov.axvline(0.0, color="black", lw=1.0, alpha=0.7)
+    ax_lyapunov.set_title("Comparable Tracking Lyapunov Values")
+    ax_lyapunov.set_xlabel("time [s]")
+    ax_lyapunov.set_ylabel("normalized value")
+    ax_lyapunov.set_ylim(0.0, 1.08 * max(float(np.max(v)) for v in normalized_lyapunov.values()))
+    ax_lyapunov.grid(alpha=0.28)
+    ax_lyapunov.legend(fontsize=8)
+
+    def update(frame_number: int):
+        index = frame_number
+        for line, rollout in [
+            (line_adaptive, adaptive),
+            (line_fixed, fixed),
+            (line_pd, pd),
+        ]:
+            points = arm.forward_kinematics(rollout.q[index])
+            line.set_data(points[:, 0], points[:, 1])
+        trace_adaptive.set_data(adaptive.end_effector[: index + 1, 0], adaptive.end_effector[: index + 1, 1])
+        trace_fixed.set_data(fixed.end_effector[: index + 1, 0], fixed.end_effector[: index + 1, 1])
+        trace_pd.set_data(pd.end_effector[: index + 1, 0], pd.end_effector[: index + 1, 1])
+        target_dot.set_data([adaptive.target[index, 0]], [adaptive.target[index, 1]])
+        for patch, center in zip(obstacle_patches, adaptive.obstacle_centers[index], strict=True):
+            patch.center = (center[0], center[1])
+        time_marker.set_xdata([adaptive.time[index], adaptive.time[index]])
+        text.set_text(
+            f"t = {adaptive.time[index]:.1f} s\n"
+            f"adaptive V_e = {adaptive.tracking_lyapunov[index]:.3f}\n"
+            f"fixed V_e = {fixed.tracking_lyapunov[index]:.3f}\n"
+            f"PD V_e = {pd.tracking_lyapunov[index]:.3f}\n"
+            f"clearance = {adaptive.clearance[index]:.1f} px"
+        )
+        return (
+            line_adaptive,
+            line_fixed,
+            line_pd,
+            trace_adaptive,
+            trace_fixed,
+            trace_pd,
+            target_dot,
+            time_marker,
+            text,
+            *obstacle_patches,
+        )
+
+    ani = animation.FuncAnimation(fig, update, frames=adaptive.time.size, interval=1000 / fps, blit=False)
+    plt.show()
+    plt.close(fig)
 
 
 def _save_workspace(

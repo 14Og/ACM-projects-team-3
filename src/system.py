@@ -60,6 +60,9 @@ class PlanarArm:
     def clearance(self, q: np.ndarray, obstacle_centers: np.ndarray, radius: float) -> ClearanceResult:
         points = self.forward_kinematics(q)
         min_clearance = float("inf")
+        # Handle empty obstacle_centers (no obstacles)
+        if obstacle_centers.size == 0:
+            return ClearanceResult(min_clearance=1e6, collision=False)
         for center in obstacle_centers:
             center = np.asarray(center, dtype=float)
             for start, end in zip(points[:-1], points[1:], strict=True):

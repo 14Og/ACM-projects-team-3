@@ -194,7 +194,7 @@ def summarize_rollout(config: ProjectConfig, rollout: Rollout) -> dict[str, obje
         "tail_max_target_error_px": float(np.max(tail_error)),
         "max_target_error_px": float(np.max(rollout.target_error)),
         "tail_success_fraction": float(np.mean(tail_error <= config.target.threshold)),
-        "min_clearance_px": float(np.min(rollout.clearance)),
+        "min_clearance_px": float(np.min(rollout.clearance)) if np.isfinite(np.min(rollout.clearance)) else 1e6,
         "collision_count": float(np.sum(rollout.collision)),
         "saturation_fraction": float(np.mean(rollout.saturated)),
         "final_q_error_norm_rad": float(rollout.q_error_norm[-1]),
