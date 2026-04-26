@@ -1,4 +1,4 @@
-"""Configuration loading for the adaptive manipulator project."""
+"""Configuration loading for the robust manipulator project."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ class RobotConfig:
 
 @dataclass(frozen=True)
 class DynamicsConfig:
-    true_inertia: np.ndarray
-    true_damping: np.ndarray
+    link_masses: np.ndarray
+    joint_damping: np.ndarray
     torque_limits: np.ndarray
     disturbance_constant: np.ndarray
     disturbance_amplitude: np.ndarray
@@ -36,32 +36,20 @@ class TargetConfig:
 
 
 @dataclass(frozen=True)
-class ObstacleConfig:
-    radius: float
-    base_centers: np.ndarray
-    amplitudes: np.ndarray
-    omegas: np.ndarray
-    phases: np.ndarray
-
-
-@dataclass(frozen=True)
 class PlannerConfig:
     goal_gain: float
     max_task_speed: float
     damping: float
     max_joint_speed: float
-    safe_margin: float
-    repulsion_influence: float
-    repulsion_gain: float
-    repulsion_scale: float
-    repulsion_joint_gain: float
     startup_ramp_time: float
 
 
 @dataclass(frozen=True)
-class AdaptiveControllerConfig:
+class RobustControllerConfig:
     lambda_gain: float
     sliding_gain: np.ndarray
+    reference_model_omega_n: np.ndarray
+    reference_model_zeta: np.ndarray
     gamma_inertia: np.ndarray
     gamma_damping: np.ndarray
     gamma_bias: np.ndarray
@@ -71,20 +59,6 @@ class AdaptiveControllerConfig:
     inertia_bounds: tuple[float, float]
     damping_bounds: tuple[float, float]
     bias_bounds: tuple[float, float]
-
-
-@dataclass(frozen=True)
-class FixedLyapunovControllerConfig:
-    lambda_gain: float
-    sliding_gain: np.ndarray
-    nominal_inertia: np.ndarray
-    nominal_damping: np.ndarray
-
-
-@dataclass(frozen=True)
-class PDControllerConfig:
-    kp: np.ndarray
-    kd: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -105,11 +79,8 @@ class ProjectConfig:
     robot: RobotConfig
     dynamics: DynamicsConfig
     target: TargetConfig
-    obstacles: ObstacleConfig
     planner: PlannerConfig
-    adaptive_controller: AdaptiveControllerConfig
-    fixed_lyapunov_controller: FixedLyapunovControllerConfig
-    pd_controller: PDControllerConfig
+    robust_controller: RobustControllerConfig
     simulation: SimulationConfig
     output: OutputConfig
 
@@ -125,8 +96,8 @@ def load_config(path: str | Path) -> ProjectConfig:
             initial_angles=_array(raw["robot"]["initial_angles"]),
         ),
         dynamics=DynamicsConfig(
-            true_inertia=_array(raw["dynamics"]["true_inertia"]),
-            true_damping=_array(raw["dynamics"]["true_damping"]),
+            link_masses=_array(raw["dynamics"]["link_masses"]),
+            joint_damping=_array(raw["dynamics"]["joint_damping"]),
             torque_limits=_array(raw["dynamics"]["torque_limits"]),
             disturbance_constant=_array(
                 raw["dynamics"].get("disturbance_constant", [0.0, 0.0, 0.0])
@@ -144,36 +115,25 @@ def load_config(path: str | Path) -> ProjectConfig:
             omega=float(raw["target"]["omega"]),
             threshold=float(raw["target"]["threshold"]),
         ),
-        obstacles=ObstacleConfig(
-            radius=float(raw["obstacles"]["radius"]),
-            base_centers=_array(raw["obstacles"]["base_centers"]),
-            amplitudes=_array(raw["obstacles"]["amplitudes"]),
-            omegas=_array(raw["obstacles"]["omegas"]),
-            phases=_array(raw["obstacles"]["phases"]),
-        ),
         planner=PlannerConfig(**{k: float(v) for k, v in planner_raw.items()}),
-        adaptive_controller=AdaptiveControllerConfig(
-            lambda_gain=float(raw["adaptive_controller"]["lambda_gain"]),
-            sliding_gain=_array(raw["adaptive_controller"]["sliding_gain"]),
-            gamma_inertia=_array(raw["adaptive_controller"]["gamma_inertia"]),
-            gamma_damping=_array(raw["adaptive_controller"]["gamma_damping"]),
-            gamma_bias=_array(raw["adaptive_controller"].get("gamma_bias", [1.0, 1.0, 1.0])),
-            initial_inertia_hat=_array(raw["adaptive_controller"]["initial_inertia_hat"]),
-            initial_damping_hat=_array(raw["adaptive_controller"]["initial_damping_hat"]),
-            initial_bias_hat=_array(raw["adaptive_controller"].get("initial_bias_hat", [0.0, 0.0, 0.0])),
-            inertia_bounds=_bounds(raw["adaptive_controller"]["inertia_bounds"]),
-            damping_bounds=_bounds(raw["adaptive_controller"]["damping_bounds"]),
-            bias_bounds=_bounds(raw["adaptive_controller"].get("bias_bounds", [-100.0, 100.0])),
-        ),
-        fixed_lyapunov_controller=FixedLyapunovControllerConfig(
-            lambda_gain=float(raw["fixed_lyapunov_controller"]["lambda_gain"]),
-            sliding_gain=_array(raw["fixed_lyapunov_controller"]["sliding_gain"]),
-            nominal_inertia=_array(raw["fixed_lyapunov_controller"]["nominal_inertia"]),
-            nominal_damping=_array(raw["fixed_lyapunov_controller"]["nominal_damping"]),
-        ),
-        pd_controller=PDControllerConfig(
-            kp=_array(raw["pd_controller"]["kp"]),
-            kd=_array(raw["pd_controller"]["kd"]),
+        robust_controller=RobustControllerConfig(
+            lambda_gain=float(raw["robust_controller"]["lambda_gain"]),
+            sliding_gain=_array(raw["robust_controller"]["sliding_gain"]),
+            reference_model_omega_n=_array(
+                raw["robust_controller"].get("reference_model_omega_n", [3.0, 3.0, 3.0])
+            ),
+            reference_model_zeta=_array(
+                raw["robust_controller"].get("reference_model_zeta", [1.0, 1.0, 1.0])
+            ),
+            gamma_inertia=_array(raw["robust_controller"]["gamma_inertia"]),
+            gamma_damping=_array(raw["robust_controller"]["gamma_damping"]),
+            gamma_bias=_array(raw["robust_controller"].get("gamma_bias", [1.0, 1.0, 1.0])),
+            initial_inertia_hat=_array(raw["robust_controller"]["initial_inertia_hat"]),
+            initial_damping_hat=_array(raw["robust_controller"]["initial_damping_hat"]),
+            initial_bias_hat=_array(raw["robust_controller"].get("initial_bias_hat", [0.0, 0.0, 0.0])),
+            inertia_bounds=_bounds(raw["robust_controller"]["inertia_bounds"]),
+            damping_bounds=_bounds(raw["robust_controller"]["damping_bounds"]),
+            bias_bounds=_bounds(raw["robust_controller"].get("bias_bounds", [-100.0, 100.0])),
         ),
         simulation=SimulationConfig(
             dt=float(raw["simulation"]["dt"]),

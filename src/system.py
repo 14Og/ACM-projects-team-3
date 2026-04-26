@@ -1,18 +1,11 @@
-"""Planar manipulator kinematics, obstacles, and joint-space dynamics."""
+"""Planar manipulator kinematics and joint-space dynamics."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 
-from .config import DynamicsConfig, ObstacleConfig, RobotConfig
-
-
-@dataclass(frozen=True)
-class ClearanceResult:
-    min_clearance: float
-    collision: bool
+from .config import DynamicsConfig, RobotConfig
+from .robot_dynamics import RobotDynamics3DOF
 
 
 class PlanarArm:
@@ -57,89 +50,38 @@ class PlanarArm:
             jacobian[:, joint] = contribution
         return jacobian
 
-    def clearance(self, q: np.ndarray, obstacle_centers: np.ndarray, radius: float) -> ClearanceResult:
-        points = self.forward_kinematics(q)
-        min_clearance = float("inf")
-        # Handle empty obstacle_centers (no obstacles)
-        if obstacle_centers.size == 0:
-            return ClearanceResult(min_clearance=1e6, collision=False)
-        for center in obstacle_centers:
-            center = np.asarray(center, dtype=float)
-            for start, end in zip(points[:-1], points[1:], strict=True):
-                closest = closest_point_on_segment(center, start, end)
-                clearance = float(np.linalg.norm(center - closest) - radius)
-                min_clearance = min(min_clearance, clearance)
-        return ClearanceResult(min_clearance=min_clearance, collision=min_clearance < 0.0)
-
-
-class MovingObstacles:
-    """Circular obstacles moving on small ellipses around nominal centers."""
-
-    def __init__(self, cfg: ObstacleConfig) -> None:
-        self.cfg = cfg
-
-    def centers(self, time: float) -> np.ndarray:
-        phase = self.cfg.omegas * float(time) + self.cfg.phases
-        offsets = np.column_stack(
-            [
-                self.cfg.amplitudes[:, 0] * np.cos(phase),
-                self.cfg.amplitudes[:, 1] * np.sin(phase),
-            ]
-        )
-        return self.cfg.base_centers + offsets
-
-
 class JointSpacePlant:
-    """Simplified torque-level dynamics with unknown diagonal inertia and damping."""
+    """Torque-level plant backed by the full 3DOF rigid-body manipulator model."""
 
-    def __init__(self, q0: np.ndarray, cfg: DynamicsConfig) -> None:
+    def __init__(self, q0: np.ndarray, robot_cfg: RobotConfig, cfg: DynamicsConfig) -> None:
         self.q = wrap_angles(np.asarray(q0, dtype=float))
         self.dq = np.zeros_like(self.q)
-        self.inertia = np.asarray(cfg.true_inertia, dtype=float)
-        self.damping = np.asarray(cfg.true_damping, dtype=float)
         self.torque_limits = np.asarray(cfg.torque_limits, dtype=float)
         self.disturbance_constant = np.asarray(cfg.disturbance_constant, dtype=float)
         self.disturbance_amplitude = np.asarray(cfg.disturbance_amplitude, dtype=float)
         self.disturbance_frequency = np.asarray(cfg.disturbance_frequency, dtype=float)
+        self.robot = RobotDynamics3DOF(
+            masses=np.asarray(cfg.link_masses, dtype=float),
+            lengths=np.asarray(robot_cfg.link_lengths, dtype=float) / 20000.0,
+            damping=np.asarray(cfg.joint_damping, dtype=float),
+        )
 
     def disturbance(self, time: float) -> np.ndarray:
         return self.disturbance_constant + self.disturbance_amplitude * np.sin(
             self.disturbance_frequency * float(time)
         )
 
-    def acceleration(self, dq: np.ndarray, tau: np.ndarray, time: float) -> np.ndarray:
-        return (tau + self.disturbance(time) - self.damping * dq) / self.inertia
+    def acceleration(self, q: np.ndarray, dq: np.ndarray, tau: np.ndarray, time: float) -> np.ndarray:
+        applied_tau = np.asarray(tau, dtype=float) + self.disturbance(time)
+        return self.robot.acceleration(q, dq, applied_tau)
 
     def step(self, tau: np.ndarray, dt: float, time: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Integrate with constant torque using RK4."""
         tau = np.clip(np.asarray(tau, dtype=float), -self.torque_limits, self.torque_limits)
-        q0 = self.q.copy()
-        dq0 = self.dq.copy()
-
-        def rhs(q: np.ndarray, dq: np.ndarray, stage_time: float) -> tuple[np.ndarray, np.ndarray]:
-            del q
-            return dq, self.acceleration(dq, tau, stage_time)
-
-        k1_q, k1_dq = rhs(q0, dq0, time)
-        k2_q, k2_dq = rhs(q0 + 0.5 * dt * k1_q, dq0 + 0.5 * dt * k1_dq, time + 0.5 * dt)
-        k3_q, k3_dq = rhs(q0 + 0.5 * dt * k2_q, dq0 + 0.5 * dt * k2_dq, time + 0.5 * dt)
-        k4_q, k4_dq = rhs(q0 + dt * k3_q, dq0 + dt * k3_dq, time + dt)
-
-        self.q = wrap_angles(q0 + (dt / 6.0) * (k1_q + 2.0 * k2_q + 2.0 * k3_q + k4_q))
-        self.dq = dq0 + (dt / 6.0) * (k1_dq + 2.0 * k2_dq + 2.0 * k3_dq + k4_dq)
+        applied_tau = tau + self.disturbance(time)
+        self.q, self.dq = self.robot.step(self.q, self.dq, applied_tau, dt)
+        self.q = wrap_angles(self.q)
         return self.q.copy(), self.dq.copy(), tau, self.disturbance(time)
-
-
-def closest_point_on_segment(point: np.ndarray, start: np.ndarray, end: np.ndarray) -> np.ndarray:
-    segment = end - start
-    denom = float(np.dot(segment, segment))
-    if denom <= 1e-12:
-        return start.copy()
-    fraction = float(np.dot(point - start, segment) / denom)
-    fraction = min(max(fraction, 0.0), 1.0)
-    return start + fraction * segment
-
-
 def wrap_angles(q: np.ndarray) -> np.ndarray:
     return (np.asarray(q, dtype=float) + np.pi) % (2.0 * np.pi) - np.pi
 

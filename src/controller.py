@@ -1,4 +1,4 @@
-"""Reference generation and Lyapunov/adaptive controllers."""
+"""Reference generation and robust controller for the manipulator."""
 
 from __future__ import annotations
 
@@ -7,13 +7,11 @@ from dataclasses import dataclass
 import numpy as np
 
 from .config import (
-    AdaptiveControllerConfig,
-    FixedLyapunovControllerConfig,
-    PDControllerConfig,
     PlannerConfig,
+    RobustControllerConfig,
     TargetConfig,
 )
-from .system import MovingObstacles, PlanarArm, angle_error, wrap_angles
+from .system import PlanarArm, angle_error, wrap_angles
 
 
 @dataclass(frozen=True)
@@ -30,8 +28,6 @@ class ReferenceState:
     ddq: np.ndarray
     target: np.ndarray
     target_velocity: np.ndarray
-    obstacle_centers: np.ndarray
-    reference_clearance: float
 
 
 @dataclass(frozen=True)
@@ -41,6 +37,9 @@ class ControlInfo:
     q_error: np.ndarray
     dq_error: np.ndarray
     sliding_error: np.ndarray
+    q_model: np.ndarray
+    dq_model: np.ndarray
+    ddq_model: np.ndarray
     dq_r: np.ndarray
     ddq_r: np.ndarray
     inertia_hat: np.ndarray
@@ -49,29 +48,45 @@ class ControlInfo:
     saturated: bool
 
 
-class ObstacleAwareReferenceGenerator:
-    """Kinematic APF reference generator for the manipulator.
+class JointReferenceModel:
+    def __init__(self, omega_n: float, zeta: float, dt: float) -> None:
+        self.wn2 = float(omega_n) ** 2
+        self.two_zeta_wn = 2.0 * float(zeta) * float(omega_n)
+        self.dt = float(dt)
+        self.q_m = 0.0
+        self.dq_m = 0.0
+        self.ddq_m = 0.0
+        self.initialized = False
 
-    This is a planner, not the adaptive-control proof itself. It turns the
-    target and obstacle geometry into a bounded desired joint trajectory. The
-    adaptive controller then tracks that trajectory.
-    """
+    def reset(self, q0: float = 0.0, dq0: float = 0.0, ddq0: float = 0.0) -> None:
+        self.q_m = float(q0)
+        self.dq_m = float(dq0)
+        self.ddq_m = float(ddq0)
+        self.initialized = True
+
+    def step(self, r: float) -> tuple[float, float, float]:
+        angle_error = float(wrap_angles(float(r) - self.q_m))
+        self.ddq_m = self.wn2 * angle_error - self.two_zeta_wn * self.dq_m
+        self.dq_m += self.ddq_m * self.dt
+        self.q_m += self.dq_m * self.dt
+        self.q_m = float(wrap_angles(self.q_m))
+        return self.q_m, self.dq_m, self.ddq_m
+
+
+class ReferenceGenerator:
+    """Kinematic reference generator for the manipulator."""
 
     def __init__(
         self,
         *,
         arm: PlanarArm,
-        obstacles: MovingObstacles,
         target_cfg: TargetConfig,
         planner_cfg: PlannerConfig,
         q0: np.ndarray,
-        obstacle_radius: float,
     ) -> None:
         self.arm = arm
-        self.obstacles = obstacles
         self.target_cfg = target_cfg
         self.cfg = planner_cfg
-        self.obstacle_radius = float(obstacle_radius)
         self.q = wrap_angles(np.asarray(q0, dtype=float))
         self.dq = np.zeros_like(self.q)
         self._first_step = True
@@ -84,7 +99,6 @@ class ObstacleAwareReferenceGenerator:
     def step(self, time: float, dt: float) -> ReferenceState:
         target = self.target_position(time)
         target_velocity = self.target_velocity(time)
-        obstacle_centers = self.obstacles.centers(time)
 
         q_current = self.q.copy()
         dq_current = self.dq.copy()
@@ -92,7 +106,6 @@ class ObstacleAwareReferenceGenerator:
             self.q,
             target,
             target_velocity,
-            obstacle_centers,
             time,
             dt,
         )
@@ -103,15 +116,12 @@ class ObstacleAwareReferenceGenerator:
             ddq = (dq_next - dq_current) / dt
         self.q = q_next
         self.dq = dq_next
-        clearance = self.arm.clearance(q_current, obstacle_centers, self.obstacle_radius).min_clearance
         return ReferenceState(
             q=q_current,
             dq=dq_current,
             ddq=ddq,
             target=target,
             target_velocity=target_velocity,
-            obstacle_centers=obstacle_centers,
-            reference_clearance=clearance,
         )
 
     def target_position(self, time: float) -> np.ndarray:
@@ -140,7 +150,6 @@ class ObstacleAwareReferenceGenerator:
         q: np.ndarray,
         target: np.ndarray,
         target_velocity: np.ndarray,
-        obstacle_centers: np.ndarray,
         time: float,
         dt: float,
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -154,182 +163,25 @@ class ObstacleAwareReferenceGenerator:
         damping_matrix = (self.cfg.damping**2) * np.eye(2)
         dq = jacobian.T @ np.linalg.solve(jacobian @ jacobian.T + damping_matrix, desired_task_velocity)
 
-        for center in obstacle_centers:
-            for link_index in range(1, self.arm.n_joints + 1):
-                point = points[link_index]
-                delta = point - center
-                distance = float(np.linalg.norm(delta))
-                clearance = distance - self.obstacle_radius - self.cfg.safe_margin
-                if clearance >= self.cfg.repulsion_influence:
-                    continue
-
-                direction = delta / (distance + 1e-9)
-                effective_clearance = max(clearance, 4.0)
-                magnitude = (
-                    self.cfg.repulsion_gain
-                    * (1.0 / effective_clearance - 1.0 / self.cfg.repulsion_influence)
-                    / (effective_clearance**2)
-                    * self.cfg.repulsion_scale
-                )
-                if clearance < 0.0:
-                    magnitude += self.cfg.repulsion_gain * (-clearance + 1.0) * 0.5
-                point_velocity = ramp * magnitude * direction
-                point_jacobian = self.arm.point_jacobian(q, link_index)
-                dq += (
-                    self.cfg.repulsion_joint_gain
-                    * (point_jacobian.T @ point_velocity)
-                    / (np.linalg.norm(point_jacobian, ord="fro") + 1e-6)
-                )
-
         dq = np.clip(dq, -self.cfg.max_joint_speed, self.cfg.max_joint_speed)
         return wrap_angles(q + dt * dq), dq
 
 
-class AdaptiveLyapunovController:
-    """Slotine-Li-style adaptive controller for diagonal joint dynamics."""
-
-    name = "adaptive"
-
-    def __init__(self, cfg: AdaptiveControllerConfig, torque_limits: np.ndarray) -> None:
-        self.cfg = cfg
-        self.torque_limits = np.asarray(torque_limits, dtype=float)
-        self.inertia_hat = cfg.initial_inertia_hat.copy()
-        self.damping_hat = cfg.initial_damping_hat.copy()
-        self.bias_hat = cfg.initial_bias_hat.copy()
-
-    def reset(self) -> None:
-        self.inertia_hat = self.cfg.initial_inertia_hat.copy()
-        self.damping_hat = self.cfg.initial_damping_hat.copy()
-        self.bias_hat = self.cfg.initial_bias_hat.copy()
-
-    def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
-        q_error, dq_error, sliding, dq_r, ddq_r = _filtered_errors(
-            q,
-            dq,
-            ref,
-            self.cfg.lambda_gain,
-        )
-        inertia_hat = self.inertia_hat.copy()
-        damping_hat = self.damping_hat.copy()
-        bias_hat = self.bias_hat.copy()
-        tau_raw = inertia_hat * ddq_r + damping_hat * dq - bias_hat - self.cfg.sliding_gain * sliding
-        #print(tau_raw)
-        tau = np.clip(tau_raw, -self.torque_limits, self.torque_limits)
-
-        self.inertia_hat = np.clip(
-            inertia_hat + dt * (-self.cfg.gamma_inertia * sliding * ddq_r),
-            self.cfg.inertia_bounds[0],
-            self.cfg.inertia_bounds[1],
-        )
-        self.damping_hat = np.clip(
-            damping_hat + dt * (-self.cfg.gamma_damping * sliding * dq),
-            self.cfg.damping_bounds[0],
-            self.cfg.damping_bounds[1],
-        )
-        self.bias_hat = np.clip(
-            bias_hat + dt * (self.cfg.gamma_bias * sliding),
-            self.cfg.bias_bounds[0],
-            self.cfg.bias_bounds[1],
-        )
-
-        return ControlInfo(
-            tau_raw=tau_raw,
-            tau=tau,
-            q_error=q_error,
-            dq_error=dq_error,
-            sliding_error=sliding,
-            dq_r=dq_r,
-            ddq_r=ddq_r,
-            inertia_hat=inertia_hat,
-            damping_hat=damping_hat,
-            bias_hat=bias_hat,
-            saturated=bool(np.any(np.abs(tau_raw - tau) > 1e-9)),
-        )
-
-
-class FixedLyapunovController:
-    """Same filtered-error law as adaptive control, but with fixed wrong parameters."""
-
-    name = "fixed_lyapunov"
-
-    def __init__(self, cfg: FixedLyapunovControllerConfig, torque_limits: np.ndarray) -> None:
-        self.cfg = cfg
-        self.torque_limits = np.asarray(torque_limits, dtype=float)
-
-    def reset(self) -> None:
-        return None
-
-    def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
-        del dt
-        q_error, dq_error, sliding, dq_r, ddq_r = _filtered_errors(
-            q,
-            dq,
-            ref,
-            self.cfg.lambda_gain,
-        )
-        tau_raw = self.cfg.nominal_inertia * ddq_r + self.cfg.nominal_damping * dq
-        tau_raw = tau_raw - self.cfg.sliding_gain * sliding
-        tau = np.clip(tau_raw, -self.torque_limits, self.torque_limits)
-        return ControlInfo(
-            tau_raw=tau_raw,
-            tau=tau,
-            q_error=q_error,
-            dq_error=dq_error,
-            sliding_error=sliding,
-            dq_r=dq_r,
-            ddq_r=ddq_r,
-            inertia_hat=self.cfg.nominal_inertia.copy(),
-            damping_hat=self.cfg.nominal_damping.copy(),
-            bias_hat=np.zeros_like(q),
-            saturated=bool(np.any(np.abs(tau_raw - tau) > 1e-9)),
-        )
-
-
-class PlainPDController:
-    """Classical joint-space Lyapunov PD baseline."""
-
-    name = "plain_pd"
-
-    def __init__(self, cfg: PDControllerConfig, torque_limits: np.ndarray) -> None:
-        self.cfg = cfg
-        self.torque_limits = np.asarray(torque_limits, dtype=float)
-
-    def reset(self) -> None:
-        return None
-
-    def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
-        del dt
-        q_error = angle_error(q, ref.q)
-        dq_error = dq - ref.dq
-        tau_raw = -self.cfg.kp * q_error - self.cfg.kd * dq_error
-        tau = np.clip(tau_raw, -self.torque_limits, self.torque_limits)
-        return ControlInfo(
-            tau_raw=tau_raw,
-            tau=tau,
-            q_error=q_error,
-            dq_error=dq_error,
-            sliding_error=dq_error,
-            dq_r=ref.dq.copy(),
-            ddq_r=np.zeros_like(q),
-            inertia_hat=np.full_like(q, np.nan, dtype=float),
-            damping_hat=np.full_like(q, np.nan, dtype=float),
-            bias_hat=np.full_like(q, np.nan, dtype=float),
-            saturated=bool(np.any(np.abs(tau_raw - tau) > 1e-9)),
-        )
-
-
-class RobustAdaptiveController:
-    """Robust adaptive controller with sliding mode: tau = M*ddq_r + D*dq - b_hat - K*s - rho*sat(s/epsilon)"""
+class RobustController:
+    """Robust controller with adaptive parameter estimates and sliding term."""
 
     name = "robust"
 
-    def __init__(self, cfg: AdaptiveControllerConfig, torque_limits: np.ndarray) -> None:
+    def __init__(self, cfg: RobustControllerConfig, torque_limits: np.ndarray) -> None:
         self.cfg = cfg
         self.torque_limits = np.asarray(torque_limits, dtype=float)
         self.inertia_hat = cfg.initial_inertia_hat.copy()
         self.damping_hat = cfg.initial_damping_hat.copy()
         self.bias_hat = cfg.initial_bias_hat.copy()
-        # Robust gains
+        self.ref_models = [
+            JointReferenceModel(omega_n, zeta, dt=1.0)
+            for omega_n, zeta in zip(cfg.reference_model_omega_n, cfg.reference_model_zeta, strict=True)
+        ]
         self.K = np.array(cfg.sliding_gain) * 2.0  # Higher gain for robustness
         self.rho = 5.0  # Robust boundary layer gain
         self.epsilon = 0.5  # Sliding surface boundary layer width
@@ -338,6 +190,9 @@ class RobustAdaptiveController:
         self.inertia_hat = self.cfg.initial_inertia_hat.copy()
         self.damping_hat = self.cfg.initial_damping_hat.copy()
         self.bias_hat = self.cfg.initial_bias_hat.copy()
+        for model in self.ref_models:
+            model.reset()
+            model.initialized = False
 
     def _sat(self, x: np.ndarray) -> np.ndarray:
         """Saturation function for sliding mode."""
@@ -348,18 +203,21 @@ class RobustAdaptiveController:
         )
 
     def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
+        q_model, dq_model, ddq_model = _step_reference_models(self.ref_models, ref, dt)
         q_error, dq_error, sliding, dq_r, ddq_r = _filtered_errors(
             q,
             dq,
-            ref,
+            q_model,
+            dq_model,
+            ddq_model,
             self.cfg.lambda_gain,
         )
         inertia_hat = self.inertia_hat.copy()
         damping_hat = self.damping_hat.copy()
         bias_hat = self.bias_hat.copy()
 
-        # Robust control law: -K*s - rho*sat(s/epsilon)
         sat_term = self.rho * self._sat(sliding / self.epsilon)
+        print(f"inertia_hat: {inertia_hat}, damping_hat: {damping_hat}, bias_hat: {bias_hat}")  # Debug print
         tau_raw = (
             inertia_hat * ddq_r
             + damping_hat * dq
@@ -367,9 +225,9 @@ class RobustAdaptiveController:
             - self.K * sliding
             - sat_term
         )
+        print("Controller computed tau_raw:", tau_raw)  # Debug print
         tau = np.clip(tau_raw, -self.torque_limits, self.torque_limits)
 
-        # Adaptive laws (same as adaptive controller)
         self.inertia_hat = np.clip(
             inertia_hat + dt * (-self.cfg.gamma_inertia * sliding * ddq_r),
             self.cfg.inertia_bounds[0],
@@ -392,6 +250,9 @@ class RobustAdaptiveController:
             q_error=q_error,
             dq_error=dq_error,
             sliding_error=sliding,
+            q_model=q_model,
+            dq_model=dq_model,
+            ddq_model=ddq_model,
             dq_r=dq_r,
             ddq_r=ddq_r,
             inertia_hat=inertia_hat,
@@ -404,15 +265,33 @@ class RobustAdaptiveController:
 def _filtered_errors(
     q: np.ndarray,
     dq: np.ndarray,
-    ref: ReferenceState,
+    q_model: np.ndarray,
+    dq_model: np.ndarray,
+    ddq_model: np.ndarray,
     lambda_gain: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    q_error = angle_error(q, ref.q)
-    dq_error = dq - ref.dq
+    q_error = angle_error(q, q_model)
+    dq_error = dq - dq_model
     sliding = dq_error + lambda_gain * q_error
-    dq_r = ref.dq - lambda_gain * q_error
-    ddq_r = ref.ddq - lambda_gain * dq_error
+    dq_r = dq_model - lambda_gain * q_error
+    ddq_r = ddq_model - lambda_gain * dq_error
     return q_error, dq_error, sliding, dq_r, ddq_r
+
+
+def _step_reference_models(
+    ref_models: list[JointReferenceModel],
+    ref: ReferenceState,
+    dt: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    q_model = np.zeros_like(ref.q)
+    dq_model = np.zeros_like(ref.dq)
+    ddq_model = np.zeros_like(ref.ddq)
+    for index, model in enumerate(ref_models):
+        model.dt = float(dt)
+        if not model.initialized:
+            model.reset(ref.q[index], ref.dq[index], ref.ddq[index])
+        q_model[index], dq_model[index], ddq_model[index] = model.step(ref.q[index])
+    return q_model, dq_model, ddq_model
 
 
 def _limit_norm(vector: np.ndarray, max_norm: float) -> np.ndarray:

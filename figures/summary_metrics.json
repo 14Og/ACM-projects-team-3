@@ -1,0 +1,38 @@
+{
+  "robust": {
+    "final_target_error_px": 99.75800143097773,
+    "mean_target_error_px": 177.9978753898265,
+    "tail_mean_target_error_px": 177.9978753898265,
+    "tail_max_target_error_px": 357.7615110507129,
+    "max_target_error_px": 357.7615110507129,
+    "tail_success_fraction": 0.0172327589080364,
+    "saturation_fraction": 0.9994666844438519,
+    "final_q_error_norm_rad": 3.1747667326373006,
+    "tail_mean_q_error_norm_rad": 3.019597572816659,
+    "final_sliding_norm": 71.11920446978681,
+    "tail_mean_sliding_norm": 50.5590395839466,
+    "max_sliding_norm": 102.01571728978423,
+    "rms_torque": 1729.427906210733,
+    "rms_external_torque": 0.0,
+    "max_external_torque": 0.0,
+    "tracking_lyapunov_initial": 0.0,
+    "tracking_lyapunov_final": 326.4966617721002,
+    "tracking_lyapunov_tail_mean": 329.917506858188,
+    "final_inertia_hat": [
+      9351.333649687345,
+      9777.719115478576,
+      10024.29540577133
+    ],
+    "final_damping_hat": [
+      0.0,
+      0.04697013556423674,
+      0.0
+    ],
+    "final_bias_hat": [
+      432.31151230427963,
+      440.61527117775466,
+      449.19210739850035
+    ],
+    "final_bias_error_norm": 763.4190266262464
+  }
+}
