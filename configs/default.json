@@ -1,0 +1,65 @@
+{
+  "robot": {
+    "base_xy": [400.0, 600.0],
+    "link_lengths": [90.0, 70.0, 40.0],
+    "initial_angles": [3.141592653589793, -0.5, 0.7]
+  },
+  "dynamics": {
+    "true_inertia": [18.0, 10.0, 5.0],
+    "true_damping": [16.0, 9.0, 4.0],
+    "torque_limits": [22.0, 16.0, 12.0]
+  },
+  "target": {
+    "center_xy": [560.0, 620.0],
+    "amplitude_xy": [25.0, 18.0],
+    "omega": 0.28,
+    "threshold": 30.0
+  },
+  "obstacles": {
+    "radius": 30.0,
+    "base_centers": [[440.0, 480.0], [520.0, 750.0]],
+    "amplitudes": [[8.0, 8.0], [8.0, 10.0]],
+    "omegas": [0.20, 0.25],
+    "phases": [0.0, 1.0]
+  },
+  "planner": {
+    "goal_gain": 1.4,
+    "max_task_speed": 120.0,
+    "damping": 25.0,
+    "max_joint_speed": 1.4,
+    "safe_margin": 8.0,
+    "repulsion_influence": 75.0,
+    "repulsion_gain": 60.0,
+    "repulsion_scale": 800.0,
+    "repulsion_joint_gain": 0.08
+  },
+  "adaptive_controller": {
+    "lambda_gain": 1.8,
+    "sliding_gain": [8.0, 6.0, 4.0],
+    "gamma_inertia": [2.0, 1.4, 0.9],
+    "gamma_damping": [1.5, 1.0, 0.6],
+    "initial_inertia_hat": [1.0, 0.8, 0.5],
+    "initial_damping_hat": [0.1, 0.1, 0.1],
+    "inertia_bounds": [0.2, 30.0],
+    "damping_bounds": [0.0, 25.0]
+  },
+  "fixed_lyapunov_controller": {
+    "lambda_gain": 1.8,
+    "sliding_gain": [8.0, 6.0, 4.0],
+    "nominal_inertia": [1.0, 0.8, 0.5],
+    "nominal_damping": [0.1, 0.1, 0.1]
+  },
+  "pd_controller": {
+    "kp": [5.0, 4.0, 3.0],
+    "kd": [2.0, 1.5, 1.0]
+  },
+  "simulation": {
+    "dt": 0.02,
+    "duration": 60.0,
+    "tail_window_seconds": 10.0
+  },
+  "output": {
+    "figures_dir": "figures",
+    "animations_dir": "animations"
+  }
+}

@@ -209,3 +209,6 @@ __marimo__/
 # Claude
 .claude/
 project.md
+tasks/
+
+.DS_Store

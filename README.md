@@ -1,410 +1,429 @@
-# Lyapunov & Energy-Based Control: Safe Ellipse Tracking
+# Project 2: Adaptive Control of a 3-DOF Planar Manipulator
 
-> Advanced Control Methods course project by **Team 3**.
-> Topic: *Lyapunov and Energy-Based Control* — planar double-integrator
-> tracking a moving target on an ellipse, with obstacle avoidance.
+## Problem Definition
 
-The final controller is a **Control Lyapunov Function (CLF)** combined
-with a **Higher-Order Control Barrier Function (HOCBF)** safety filter,
-solved as a small **slack-relaxed quadratic program** at every step.
-The project went through several controller iterations; this README
-also documents the design history and the mathematical issues we
-encountered, so the trade-offs we made are visible.
+The project idea is taken from Team 8's repository:
+https://github.com/14Og/RL-projects-team-8.
 
-For full mathematical details — system model, CLF construction,
-Lyapunov derivative, HOCBF derivation, QP formulation, and
-guarantees — see [`stability.md`](stability.md).
+Control objective:
 
----
+- move the end effector of a 3-link planar manipulator toward a moving target
+- avoid moving circular obstacles
+- track an obstacle-aware joint reference under unknown joint inertia and damping
+- compare adaptive control against non-adaptive Lyapunov baselines
 
-## Notation
+Important scope note: this implementation does not copy Team 8's code and does
+not reproduce their full rigid-body `M(q), C(q, q_dot), G(q)` model. It uses a
+simplified diagonal joint-space model because the adaptive-control proof from
+the lecture requires dynamics that are linear in unknown constant parameters.
 
-We follow the course notation.
+## System Description
 
-- $`s \in \mathbb{R}^n`$ — system state.
-- $`a \in \mathbb{R}^m`$ — control action (input).
-- $`\pi(s)`$ — controller / policy.
-- $`\dot{s} = P(s, a)`$ — plant dynamics (continuous, deterministic).
-- $`L(s)`$ — Lyapunov function candidate.
-- $`\kappa_{\mathrm{low}}, \kappa_{\mathrm{up}}, \kappa_{\mathrm{dec}} \in \mathcal{K}_\infty`$ — class-$`\mathcal{K}_\infty`$ comparison functions.
-- $`\beta \in \mathcal{KL}`$ — class-$`\mathcal{KL}`$ function used for asymptotic-stability bounds $`\|s(t)\| \le \beta(\|s_0\|, t)`$.
-- $`\mathbb{S}_{\mathrm{safe}} \subset \mathbb{S}`$ — safe state set; $`B(s)`$ — barrier certificate.
+The arm has three revolute joints and link lengths:
 
-For this project the state is
-
-```math
-s \;=\; \begin{bmatrix} p \\ v \end{bmatrix} \in \mathbb{R}^4,
-\qquad p,\,v \in \mathbb{R}^2,
+```text
+L = [90, 70, 40] px
 ```
 
-the action is $`a = u \in \mathbb{R}^2`$, and the plant is the planar
-double integrator
+The base is fixed at:
 
-```math
-\dot p = v, \qquad \dot v = u.
+```text
+p_base = [400, 600] px
 ```
 
-This is a deterministic, continuous-time, **non-autonomous** control
-system (the reference is time-varying), satisfying the course's
-definition $`\dot s = P(s, a, t)`$ once we write $`P`$ around the moving
-reference $`p_r(t)`$.
-
----
-
-## Problem statement
-
-The reference trajectory is the ellipse
+State variables:
 
 ```math
-p_r(t) \;=\;
+q =
+\begin{bmatrix} q_1 & q_2 & q_3 \end{bmatrix}^T,
+\qquad
+\dot q =
+\begin{bmatrix} \dot q_1 & \dot q_2 & \dot q_3 \end{bmatrix}^T.
+```
+
+Control input:
+
+```math
+\tau =
+\begin{bmatrix} \tau_1 & \tau_2 & \tau_3 \end{bmatrix}^T.
+```
+
+Torque bounds:
+
+```text
+|tau| <= [22, 16, 12]
+```
+
+Forward kinematics for joint endpoint `i`:
+
+```math
+p_i(q) = p_base +
+\sum_{k=1}^{i}
+L_k
 \begin{bmatrix}
-c_x + a\,\cos(\theta_0 + \omega t) \\
-c_y + b\,\sin(\theta_0 + \omega t)
-\end{bmatrix},
+\cos(q_1 + ... + q_k) \\
+\sin(q_1 + ... + q_k)
+\end{bmatrix}.
 ```
 
-with derivatives $`v_r = \dot p_r`$ and $`a_r = \ddot p_r`$.
+The end effector is `p_3(q)`.
 
-Tracking errors:
+Moving target:
 
 ```math
-e_p \;=\; p - p_r,
+p_T(t) =
+c_T +
+\begin{bmatrix}
+a_x \cos(\omega_T t) \\
+a_y \sin(\omega_T t)
+\end{bmatrix}.
+```
+
+Moving obstacles:
+
+```math
+c_j(t) =
+c_{j,0} +
+\begin{bmatrix}
+A_{jx} \cos(\omega_j t + \phi_j) \\
+A_{jy} \sin(\omega_j t + \phi_j)
+\end{bmatrix}.
+```
+
+Each obstacle is a circle with radius `30 px`.
+
+## Plant Dynamics
+
+The simulated torque-level plant is:
+
+```math
+H \ddot q + D \dot q = \tau.
+```
+
+Here:
+
+- `H = diag(H_1, H_2, H_3)` is the true joint inertia matrix
+- `D = diag(D_1, D_2, D_3)` is the true viscous damping matrix
+- both `H` and `D` are unknown to the adaptive controller
+
+Default true parameters:
+
+```text
+H = [18, 10, 5]
+D = [16, 9, 4]
+```
+
+This model is deliberately simpler than a full manipulator model, but it is
+linear in unknown constant parameters and therefore fits the adaptive-control
+theory used here.
+
+## Obstacle-Aware Reference Generator
+
+The controller tracks a generated joint reference `q_r(t)`. The reference
+generator is a kinematic artificial-potential-field planner.
+
+Goal velocity in task space:
+
+```math
+v_g =
+k_g (p_T - p_3(q_r)) + \dot p_T.
+```
+
+The goal contribution to joint velocity uses damped least squares:
+
+```math
+\dot q_g =
+J_3(q_r)^T
+\left(J_3(q_r)J_3(q_r)^T + \eta^2 I\right)^{-1}
+v_g.
+```
+
+For each obstacle and each controlled point on the arm, a repulsive velocity is
+added when the clearance is below an influence distance. The code converts that
+repulsive point velocity to joint velocity through the corresponding point
+Jacobian.
+
+The planner is heuristic. It is included to preserve the obstacle-avoidance
+problem idea from Team 8. The formal adaptive proof applies to tracking the
+bounded generated reference, not to global obstacle-avoidance optimality.
+
+## Adaptive Control Theory
+
+The YouTube lecture develops adaptive control for systems with dynamics linear
+in unknown parameters:
+
+```math
+u = Y(q, \dot q, q_r, \dot q_r, \ddot q_r) \hat a - K s,
+```
+
+with filtered tracking error:
+
+```math
+e = q - q_r,
 \qquad
-e_v \;=\; v - v_r.
-```
-
-The plant must asymptotically track the reference,
-
-```math
-\|e_p(t)\| + \|e_v(t)\| \;\xrightarrow[t \to \infty]{}\; 0,
-```
-
-while remaining outside every circular obstacle and respecting the box
-control bound:
-
-```math
-\|p(t) - c_i\| \;\ge\; r_{\text{obs},i} + r_{\text{plant}} + \delta_{\text{safe}},
+\dot e = \dot q - \dot q_r,
 \qquad
-i = 1,\ldots,N_{\text{obs}},
+s = \dot e + \lambda e.
+```
+
+For this project:
+
+```math
+\dot q_r^* = \dot q_r - \lambda e,
 \qquad
-|u_j| \le u_{\max}.
+\ddot q_r^* = \ddot q_r - \lambda \dot e.
 ```
 
----
-
-## Demo
-
-### Pure Lyapunov tracking, no obstacles
-
-Closed loop with the nominal CLF controller and reference feed-forward;
-$`L_{\text{tot}}`$ in the bottom-right panel descends monotonically.
-
-![Pure Lyapunov tracking](assets/gif/lyapunov_stability.gif)
-
-Figure 1. Tracking of a moving target on an elliptical trajectory using the nominal Lyapunov-based controller. The left panel shows the motion in the plane, and the right panel shows speed, control effort, tracking errors, and the total Lyapunov function.
-
-Analysis.
-After the initial transient, both position and velocity errors decrease, indicating convergence to the moving reference. The monotonic decay of the Lyapunov function confirms asymptotic stability in the error coordinates.
-
-### CLF + HOCBF safety filter, four obstacles
-
-The QP overrides the nominal control only where the safety constraint
-is active.
-
-![CLF + HOCBF QP](assets/gif/clf_cbf_qp.gif)
-
-Figure 2. Safe elliptical trajectory tracking in the presence of obstacles using the Lyapunov-based controller with a barrier-function safety filter. The left panel shows the avoidance motion, and the right panel shows the corresponding dynamic metrics.
-
-Analysis.
-The plant deviates from the reference near obstacles and returns to tracking afterward. Since the barrier function is active, safety is prioritized over exact tracking, so the Lyapunov function is no longer globally monotone; the result is practically stable safe tracking.
-
-### Initial Lyapunov tracking under control constraints
-
-![Constrained, feasible](assets/gif/constrained.gif)
-
-Figure 3. Elliptical trajectory tracking with obstacle avoidance using the initial Lyapunov formulation under constrained control. The left panel shows the trajectory, and the right panel shows the main response metrics.
-
-Analysis.
-This initial solution remains visually workable, but tracking quality degrades in constrained regions. Error growth, control saturation, and peaks in the Lyapunov function indicate problematic behavior and the absence of a strict stability guarantee.
-
-### Trapping regime in the initial Lyapunov solution
-
-![Constrained, stalled](assets/gif/constrained_stalled.gif)
-
-Figure 4. Severe trapping case of the initial Lyapunov-APF obstacle-avoidance solution during elliptical trajectory tracking. The left panel shows the plant motion, and the right panel shows the corresponding metrics.
-
-Analysis.
-In this regime, the plant becomes trapped near the obstacles and fails to recover the reference trajectory. The large error growth, control saturation, and extreme Lyapunov spikes show that the initial Lyapunov-APF formulation is not reliable as a final solution.
-
----
-
-## Final controller
-
-The implementation is in
-[`lyapunov_apf/controller.py`](lyapunov_apf/controller.py).
-
-### 1. CLF nominal control
-
-Pick the Lyapunov function candidate
+The adaptive torque law is:
 
 ```math
-L(e_p, e_v) \;=\; \tfrac{1}{2}\,k_p\,\|e_p\|^2 \;+\; \tfrac{1}{2}\,\|e_v\|^2.
+\tau =
+\hat H \ddot q_r^*
++ \hat D \dot q
+- K_s s.
 ```
 
-Bounds with $`\kappa_{\mathrm{low}}, \kappa_{\mathrm{up}} \in \mathcal{K}_\infty`$ are immediate
-($`L`$ is a positive-definite quadratic form on the error coordinates).
-Choose the nominal action
+Because:
 
 ```math
-u_{\text{des}} \;=\; a_r \;-\; k_p\,e_p \;-\; k_v\,e_v.
+H \dot s =
+-K_s s
++ \tilde H \ddot q_r^*
++ \tilde D \dot q,
 ```
 
-The error dynamics become autonomous,
+where:
 
 ```math
-\dot e_p = e_v,
+\tilde H = \hat H - H,
 \qquad
-\dot e_v = -\,k_p\,e_p - k_v\,e_v,
+\tilde D = \hat D - D,
 ```
 
-and the Lyapunov derivative is
+use the augmented Lyapunov candidate:
 
 ```math
-\dot L \;=\; -\,k_v\,\|e_v\|^2 \;\le\; 0.
+V =
+\frac{1}{2}s^T Hs
++ \sum_i \frac{\tilde H_i^2}{2\gamma_{H_i}}
++ \sum_i \frac{\tilde D_i^2}{2\gamma_{D_i}}.
 ```
 
-Applying LaSalle's invariance principle to the largest invariant subset
-of $`\{\dot L = 0\} = \{e_v = 0\}`$ — on which $`\dot e_v = 0`$ forces
-$`e_p = 0`$ — gives global asymptotic stability of $`(e_p, e_v) = 0`$, i.e.
-the *asymptotic stability* characterisation $`\|s(t)\| \le \beta(\|s_0\|, t)`$
-with $`\beta \in \mathcal{KL}`$.
-
-### 2. HOCBF safety constraint
-
-Per obstacle $`i`$, define the per-obstacle safety radius
+The update laws are:
 
 ```math
-r_{s,i} \;=\; r_{\text{obs},i} \;+\; r_{\text{plant}} \;+\; \delta_{\text{safe}}.
-```
-
-Take the barrier function
-
-```math
-B_i(p) \;=\; r_{s,i}^2 \;-\; \|p - c_i\|^2,
-```
-
-so the safe set is $`\mathbb{S}_{\text{safe},i} = \{ s : B_i(p) \le 0 \}`$.
-The implementation works with $`h_i := -B_i \ge 0`$ (the sign convention
-used in stability.md):
-
-```math
-h_i(p) = \|p - c_i\|^2 - r_{s,i}^2,
-\qquad h_i \ge 0 \;\Leftrightarrow\; s \in \mathbb{S}_{\text{safe},i}.
-```
-
-Because $`h_i`$ has relative degree 2 with respect to $`u`$, we use the
-HOCBF condition
-
-```math
-\ddot h_i + \alpha_1 \,\dot h_i + \alpha_2 \, h_i \;\ge\; 0,
+\dot{\hat H}_i = -\gamma_{H_i} s_i \ddot q_{r,i}^*,
 \qquad
-s^2 + \alpha_1 s + \alpha_2 \text{ Hurwitz},
-\quad \alpha_1 > 0, \quad \alpha_2 > 0
+\dot{\hat D}_i = -\gamma_{D_i} s_i \dot q_i.
 ```
 
-which is **linear** in $`u`$:
+Substitution gives:
 
 ```math
-2\,(p - c_i)^{\!\top} u
-\;\ge\;
--2\,\|v\|^2 \;-\; 2\alpha_1 (p - c_i)^{\!\top} v \;-\; \alpha_2\, h_i.
+\dot V = -s^T K_s s <= 0.
 ```
 
-### 3. Slack-relaxed CLF–CBF–QP
+Under the standard lecture assumptions of bounded reference signals, positive
+inertia, no actuator saturation, and exact velocity measurement, the filtered
+error `s` converges to zero. Since `s = dot e + lambda e` is a stable first
+order filter, `e -> 0` and `dot e -> 0`.
 
-The final controller is the convex program
+Parameter convergence is not guaranteed without persistent excitation. The
+results therefore focus on tracking improvement, not exact identification.
+
+## Comparison Controllers
+
+### Fixed Lyapunov Baseline
+
+The fixed baseline uses the same filtered-error structure but keeps incorrect
+parameters:
 
 ```math
-\min_{u,\;s_{\text{slk}}}\;
-\tfrac{1}{2}\,\|u - u_{\text{des}}\|^2 \;+\; \rho\, s_{\text{slk}}
+\tau =
+H_0 \ddot q_r^*
++ D_0 \dot q
+- K_s s.
 ```
 
-subject to
+Defaults:
+
+```text
+H_0 = [1.0, 0.8, 0.5]
+D_0 = [0.1, 0.1, 0.1]
+```
+
+### Plain PD Lyapunov Baseline
+
+The second baseline is classical joint-space PD tracking:
 
 ```math
-A\,u + s_{\text{slk}}\,\mathbf{1} \;\ge\; b,
-\qquad
-|u_j| \le u_{\max},
-\qquad
-s_{\text{slk}} \ge 0,
+\tau = -K_p e - K_d \dot e.
 ```
 
-where each row of $`(A, b)`$ is one HOCBF constraint, and $`\rho \gg 0`$
-ensures the slack is used only when no strictly safe control exists.
-We solve with `scipy.optimize.minimize` using `LinearConstraint` and
-`Bounds`, with an analytic objective gradient.
+This is a simple Lyapunov controller for joint errors, but it has no adaptive
+model compensation.
 
-### Guarantees
+## Algorithm Listing
 
-- **Forward invariance** of $`\mathbb{S}_{\text{safe}}`$ while $`s_{\text{slk}}^\star = 0`$: $`h_i(p(t)) \ge 0`$ for all $`i`$.
-- **Asymptotic tracking** $`e_p, e_v \to 0`$ when the CBF is inactive (no override): $`u^\star = u_{\text{des}}`$ and $`\dot L \le 0`$, so the existence of $`\beta \in \mathcal{KL}`$ with $`\|s(t)\| \le \beta(\|s_0\|, t)`$ follows.
-- **Practical / ultimate boundedness** when the CBF is active: the filter modifies $`u`$ away from $`u_{\text{des}}`$, monotone descent of $`L`$ is no longer guaranteed, and only a vicinity of the origin can be reached (analogous to the sample-and-hold practical-stability result in the course notes).
-- **Graceful degradation** when no safe control exists ($`s_{\text{slk}}^\star > 0`$): the QP remains feasible, the result is best-effort, and safety must be restored by control authority $`u_{\max}`$ and parameter choice $`\alpha_1, \alpha_2, \delta_{\text{safe}}`$.
+For each simulation step:
 
----
+1. Compute the moving target `p_T(t)` and moving obstacles `c_j(t)`.
+2. Update the obstacle-aware joint reference `q_r, dot q_r, ddot q_r`.
+3. Measure the plant state `q, dot q`.
+4. Compute `e = q - q_r`, `dot e = dot q - dot q_r`.
+5. Compute `s = dot e + lambda e`.
+6. Compute `ddot q_r_star = ddot q_r - lambda dot e`.
+7. Apply adaptive torque:
+   `tau = H_hat ddot q_r_star + D_hat dot q - K_s s`.
+8. Update `H_hat` and `D_hat` using the adaptive laws.
+9. Clip torque to the configured actuator limits.
+10. Integrate the true plant dynamics.
+11. Record target error, joint error, torque, parameter estimates, and obstacle clearance.
 
-## Development history
+The fixed Lyapunov baseline skips step 8. The PD baseline uses its own torque
+law in step 7.
 
-### Stage 1 — APF (artificial potential field)
+## Project Structure
 
-Repulsive potential
-
-```math
-L_{\text{rep},i} \;=\; \tfrac{1}{2}\,k_{\text{rep}}\,\Bigl(\tfrac{1}{d_{\text{eff},i}} - \tfrac{1}{I_{\text{eff}}}\Bigr)^2
+```text
+.
+|-- README.md
+|-- requirements.txt
+|-- main.py
+|-- configs/
+|   `-- default.json
+|-- figures/
+|-- animations/
+`-- src/
+    |-- __init__.py
+    |-- config.py
+    |-- system.py
+    |-- controller.py
+    |-- simulation.py
+    |-- visualization.py
+    `-- main.py
 ```
 
-added to the attractive controller
-$`u = -k_p e_p - k_v e_v - \nabla L_{\text{rep}}`$.
+Separation:
 
-We abandoned this because:
+- `system.py`: kinematics, obstacles, dynamics, collision clearance
+- `controller.py`: reference generator and controllers
+- `simulation.py`: rollout and metrics
+- `visualization.py`: plots and animation only
+- `main.py`: command-line orchestration
 
-- *Local minima* (Koren–Borenstein 1991): repulsive and attractive forces can cancel away from the goal.
-- The candidate $`L = \tfrac{1}{2} k_p \|e_p\|^2 + L_{\text{rep}} + \tfrac{1}{2}\|v\|^2`$ gives only *local* asymptotic stability, and only *uniform ultimate boundedness* for moving targets.
-- Heuristic add-ons (speed shaping, "catch" boost, gain inflation near obstacles) restored visual performance but broke the Lyapunov argument.
+## Experimental Setup
 
-### Stage 2 — Pure energy-based PBC + reference feed-forward
+Default setup:
 
-Removing all heuristics leaves the textbook passivity-based law
+| Quantity | Value |
+|---|---:|
+| duration | 60 s |
+| integration step | 0.02 s |
+| initial angles | `[pi, -0.5, 0.7]` rad |
+| target threshold | 30 px |
+| obstacle radius | 30 px |
+| true inertia | `[18, 10, 5]` |
+| true damping | `[16, 9, 4]` |
+| initial inertia estimate | `[1.0, 0.8, 0.5]` |
+| initial damping estimate | `[0.1, 0.1, 0.1]` |
+| torque limits | `[22, 16, 12]` |
 
-```math
-u \;=\; a_r \;-\; k_p\,e_p \;-\; k_v\,e_v.
+## Reproducibility
+
+Install:
+
+```bash
+pip install -r requirements.txt
 ```
 
-With the **error-coordinate** Lyapunov function $`L = \tfrac{1}{2} k_p \|e_p\|^2 + \tfrac{1}{2}\|e_v\|^2`$
-the closed loop becomes autonomous and $`L`$ is monotonically
-non-increasing along every trajectory, $`\dot L = -k_v\|e_v\|^2 \le 0`$.
-LaSalle gives global asymptotic tracking of the moving target —
-provided there are no obstacles. This is what the **Pure Lyapunov
-tracking** demo above shows.
+Run the complete experiment:
 
-### Stage 3 — CLF + HOCBF as a QP
-
-Adding obstacles back, we wanted formal *safety* rather than the
-heuristic repulsion of stage 1. The HOCBF approach treats safety as a
-*hard constraint* and embeds it in a per-step QP. The CLF nominal
-control of stage 2 becomes the QP's reference, and the safety filter
-overrides it only when necessary. This is the controller currently in
-[`lyapunov_apf/controller.py`](lyapunov_apf/controller.py).
-
----
-
-## Mathematical issues we hit (and how we resolved them)
-
-These are the non-obvious traps we encountered. They are documented
-here because they shaped the final implementation.
-
-1. **$`L_{\text{kin}} = \tfrac{1}{2}\|v\|^2`$ is not monotone for moving targets.**
-   The "obvious" candidate $`L_{\text{att}} + L_{\text{rep}} + \tfrac{1}{2}\|v\|^2`$
-   only decreases when the target is *static*. For a moving target $`v`$
-   tracks $`v_r \neq 0`$, so $`L`$ cannot reach zero. The fix is to use the
-   **error-coordinate** kinetic energy $`\tfrac{1}{2}\|e_v\|^2`$, which makes
-   $`L`$ a genuine Lyapunov function for the tracking problem.
-
-2. **Asymptotic tracking of a moving target needs reference feed-forward.**
-   Without $`a_r`$ the error dynamics are non-autonomous and the best
-   guarantee is uniform ultimate boundedness. Adding $`a_r`$ cancels the
-   drift term and produces the autonomous error system
-
-   $`\ddot e_p + k_v\,\dot e_p + k_p\,e_p \;=\; 0,`$
-
-   which gives global asymptotic stability via LaSalle. Toggle with
-   `--feedforward`.
-
-3. **APF local minima are a structural problem, not a tuning problem.**
-   No choice of $`k_{\text{rep}}, k_p, I`$ removes them on non-convex
-   obstacle layouts. CBF avoids this entirely: safety becomes a
-   *constraint* on $`u`$, not a counter-force, so it never cancels the
-   tracking force.
-
-4. **CLF–CBF–QP guarantees split.** When the CBF is *inactive*,
-   $`\dot L \le 0`$ and asymptotic tracking holds; when *active*, the
-   filter can break monotone descent of $`L`$ and only practical
-   stability / ultimate boundedness can be claimed. The
-   `stability.md` *Guarantees* section makes this split explicit
-   (early drafts overclaimed).
-
-5. **HOCBF coefficients must give a Hurwitz polynomial.** The
-   condition $`\ddot h + \alpha_1 \dot h + \alpha_2 h \ge 0`$ enforces
-   forward invariance of $`\{h \ge 0\}`$ only if
-   $`s^2 + \alpha_1 s + \alpha_2`$ has roots in the open LHP. We use
-   $`\alpha_1 = 2,\ \alpha_2 = 1`$ (double pole at $`s = -1`$).
-
-6. **Per-obstacle safety radius.** Using a single global $`r_{\text{safe}}`$
-   discards each obstacle's individual radius. We compute
-   $`r_{s,i} = r_{\text{obs},i} + r_{\text{plant}} + \delta_{\text{safe}}`$
-   per obstacle, so the geometry is honest.
-
-7. **QP infeasibility can occur** when the control authority $`u_{\max}`$ is
-   tight relative to the required avoidance acceleration. We handle
-   this with a single shared **slack variable** $`s_{\text{slk}} \ge 0`$
-   penalised by $`\rho`$ in the objective. With a strictly safe control
-   available, $`s_{\text{slk}}^\star = 0`$ and all guarantees hold;
-   otherwise the slack absorbs infeasibility and the controller does
-   its best instead of crashing. The "constrained, stalled" demo above
-   shows a regime where the slack is occasionally non-zero.
-
-8. **Box vs ball control bounds.** The stability analysis specifies a
-   box $`|u_j| \le u_{\max}`$ (linear in $`u`$, keeps the program a true
-   QP). An earlier implementation enforced a ball $`\|u\| \le u_{\max}`$,
-   which is tighter but quadratic in $`u`$ and forced a nonlinear
-   program. Box bounds are now used everywhere.
-
----
-
-## Repository layout
-
-```
-lyapunov_apf/
-├── __init__.py
-├── config.py          # APFConfig, EnvConfig, SimConfig, EpisodeState
-├── controller.py      # CLFCBFController (CLF nominal + HOCBF-QP filter)
-├── plant.py           # 2D double integrator with RK4 step
-├── simulation.py      # Episode randomisation + closed-loop rollout
-└── visualization.py   # Combined trajectory + 5-panel metrics animation
-main.py                # Entry point with episode loop and key handlers
-stability.md           # Mathematical analysis (CLF, HOCBF, QP, guarantees)
-README.md              # This file
+```bash
+python main.py
 ```
 
----
+Run without animation:
 
-## Running
-
-```
-uv sync
-uv run python main.py
+```bash
+python main.py --no-animation
 ```
 
-Useful flags:
+Run a shorter smoke test:
 
-| Flag | Effect |
-|---|---|
-| `--seed <int>` | Reproducible scenario generation. |
-| `--feedforward` / `--no-feedforward` | Enable / disable the $`a_r`$ term in $`u_{\text{des}}`$. |
-| `--constrain-control` / `--no-constrain-control` | Enable / disable the box bound $`\lvert u_j\rvert \le u_{\max}`$. |
-
-Window controls:
-
-- **ENTER** — start the next episode (re-randomises obstacles and plant start).
-- **q** — quit.
-
-To compare the no-obstacle, monotone-$`L`$ regime against the obstacle
-regime, run
-
-```
-uv run python main.py --feedforward
+```bash
+python main.py --duration 5 --no-plots --no-animation
 ```
 
-with `obstacle_bases` in `config.py` empty vs populated.
+Equivalent module entry point:
 
----
+```bash
+python -m src.main
+```
+
+Produced outputs:
+
+- `figures/summary_metrics.json`
+- `figures/workspace_trajectories.png`
+- `figures/tracking_errors.png`
+- `figures/adaptive_parameter_estimates.png`
+- `figures/control_and_clearance.png`
+- `animations/adaptive_manipulator.gif`
+
+## Results Summary
+
+Default run metrics:
+
+| Controller | Tail mean target error | Minimum clearance | Tail success |
+|---|---:|---:|---:|
+| adaptive | 4.636 px | 28.686 px | 1.000 |
+| fixed Lyapunov | 6.300 px | 63.028 px | 1.000 |
+| plain PD | 13.507 px | 28.187 px | 1.000 |
+
+The adaptive controller tracks the generated reference more tightly than the
+fixed-parameter Lyapunov controller, and both outperform the plain PD baseline
+under the chosen uncertain dynamics. All controllers avoid collision in the
+default run; the comparison is primarily about tracking quality under parameter
+mismatch.
+
+The final adaptive estimates are not equal to the true physical parameters.
+This is expected: the lecture theory guarantees tracking under the stated
+assumptions, while parameter convergence additionally requires persistent
+excitation.
+
+## Final Artifacts
+
+![Workspace trajectories](figures/workspace_trajectories.png)
+
+Figure 1. End-effector paths, moving target path, obstacles at the initial
+frame, and final arm configurations.
+
+![Tracking errors](figures/tracking_errors.png)
+
+Figure 2. End-effector target error and joint-reference tracking error. The
+adaptive controller has the lowest tail target error.
+
+![Adaptive parameter estimates](figures/adaptive_parameter_estimates.png)
+
+Figure 3. Online inertia and damping estimates. Dashed lines mark true values.
+The estimates improve tracking but do not exactly identify all parameters.
+
+![Control and clearance](figures/control_and_clearance.png)
+
+Figure 4. Adaptive torques and minimum link-obstacle clearance. The clearance
+stays positive in the default run.
+
+Animation:
+
+![Adaptive manipulator animation](animations/adaptive_manipulator.gif)
+
+## Limitations
+
+- The dynamics are diagonal joint-space dynamics, not the full rigid-body model
+  from Team 8.
+- The obstacle-aware planner is heuristic APF plus damped least squares. It is
+  not a formal CBF safety proof.
+- The Lyapunov proof ignores actuator saturation; the implementation records
+  saturation so this limitation is visible.
+- No sensor noise is simulated. A real noisy system would need projection,
+  leakage, dead zones, or filtering to avoid parameter drift.
