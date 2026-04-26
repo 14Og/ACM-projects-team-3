@@ -7,7 +7,10 @@
   "dynamics": {
     "true_inertia": [18.0, 10.0, 5.0],
     "true_damping": [16.0, 9.0, 4.0],
-    "torque_limits": [22.0, 16.0, 12.0]
+    "torque_limits": [22.0, 16.0, 12.0],
+    "disturbance_constant": [8.0, -6.0, 4.0],
+    "disturbance_amplitude": [0.0, 0.0, 0.0],
+    "disturbance_frequency": [0.0, 0.0, 0.0]
   },
   "target": {
     "center_xy": [560.0, 620.0],
@@ -31,17 +34,21 @@
     "repulsion_influence": 75.0,
     "repulsion_gain": 60.0,
     "repulsion_scale": 800.0,
-    "repulsion_joint_gain": 0.08
+    "repulsion_joint_gain": 0.08,
+    "startup_ramp_time": 2.0
   },
   "adaptive_controller": {
     "lambda_gain": 1.8,
     "sliding_gain": [8.0, 6.0, 4.0],
     "gamma_inertia": [2.0, 1.4, 0.9],
     "gamma_damping": [1.5, 1.0, 0.6],
+    "gamma_bias": [3.0, 2.2, 1.6],
     "initial_inertia_hat": [1.0, 0.8, 0.5],
     "initial_damping_hat": [0.1, 0.1, 0.1],
+    "initial_bias_hat": [0.0, 0.0, 0.0],
     "inertia_bounds": [0.2, 30.0],
-    "damping_bounds": [0.0, 25.0]
+    "damping_bounds": [0.0, 25.0],
+    "bias_bounds": [-15.0, 15.0]
   },
   "fixed_lyapunov_controller": {
     "lambda_gain": 1.8,

@@ -13,7 +13,7 @@ matplotlib.use("Agg")
 
 from .config import load_config
 from .controller import AdaptiveLyapunovController, FixedLyapunovController, PlainPDController
-from .simulation import run_rollout, summarize_rollout
+from .simulation import run_rollout, save_rollout_data_csv, summarize_rollout
 from .system import PlanarArm
 from .visualization import save_all_plots, save_animation
 
@@ -65,7 +65,8 @@ def main() -> None:
     figures_dir.mkdir(parents=True, exist_ok=True)
     animations_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = figures_dir / "summary_metrics.json"
-    metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    metrics_path.write_text(json.dumps(metrics, indent=2, allow_nan=False), encoding="utf-8")
+    rollout_data_path = save_rollout_data_csv(rollouts, figures_dir / "rollout_timeseries.csv")
 
     arm = PlanarArm(config.robot)
     plot_paths: list[Path] = []
@@ -97,9 +98,11 @@ def main() -> None:
     print(
         "  final estimates: "
         f"I_hat={rollouts['adaptive'].inertia_hat[-1].round(3).tolist()}  "
-        f"D_hat={rollouts['adaptive'].damping_hat[-1].round(3).tolist()}"
+        f"D_hat={rollouts['adaptive'].damping_hat[-1].round(3).tolist()}  "
+        f"b_hat={rollouts['adaptive'].bias_hat[-1].round(3).tolist()}"
     )
     print(f"  metrics: {metrics_path}")
+    print(f"  rollout data: {rollout_data_path}")
     for path in plot_paths:
         print(f"  plot: {path}")
     if animation_path is not None:
@@ -108,4 +111,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

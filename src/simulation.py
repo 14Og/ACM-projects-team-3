@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -28,12 +30,16 @@ class Rollout:
     time: np.ndarray
     q: np.ndarray
     dq: np.ndarray
-    q_ref: np.ndarray
-    dq_ref: np.ndarray
+    q_des: np.ndarray
+    dq_des: np.ndarray
+    dq_r: np.ndarray
+    ddq_r: np.ndarray
     tau: np.ndarray
     tau_raw: np.ndarray
+    disturbance_torque: np.ndarray
     inertia_hat: np.ndarray
     damping_hat: np.ndarray
+    bias_hat: np.ndarray
     end_effector: np.ndarray
     target: np.ndarray
     obstacle_centers: np.ndarray
@@ -70,12 +76,16 @@ def run_rollout(config: ProjectConfig, controller: Controller) -> Rollout:
 
     q = np.zeros((n_steps, n_joints))
     dq = np.zeros((n_steps, n_joints))
-    q_ref = np.zeros((n_steps, n_joints))
-    dq_ref = np.zeros((n_steps, n_joints))
+    q_des = np.zeros((n_steps, n_joints))
+    dq_des = np.zeros((n_steps, n_joints))
+    dq_r = np.zeros((n_steps, n_joints))
+    ddq_r = np.zeros((n_steps, n_joints))
     tau = np.zeros((n_steps, n_joints))
     tau_raw = np.zeros((n_steps, n_joints))
+    disturbance_torque = np.zeros((n_steps, n_joints))
     inertia_hat = np.zeros((n_steps, n_joints))
     damping_hat = np.zeros((n_steps, n_joints))
+    bias_hat = np.zeros((n_steps, n_joints))
     end_effector = np.zeros((n_steps, 2))
     target = np.zeros((n_steps, 2))
     obstacle_centers = np.zeros((n_steps, n_obstacles, 2))
@@ -91,8 +101,11 @@ def run_rollout(config: ProjectConfig, controller: Controller) -> Rollout:
 
     for index, t in enumerate(time):
         ref = planner.step(float(t), dt)
-        info = controller.compute(plant.q, plant.dq, ref, dt)
-        q_now, dq_now, tau_now = plant.step(info.tau, dt)
+        q_now = plant.q.copy()
+        dq_now = plant.dq.copy()
+        info = controller.compute(q_now, dq_now, ref, dt)
+        tau_now = info.tau.copy()
+        disturbance_now = plant.disturbance(float(t))
 
         centers = ref.obstacle_centers
         clearance_result = arm.clearance(q_now, centers, config.obstacles.radius)
@@ -100,12 +113,16 @@ def run_rollout(config: ProjectConfig, controller: Controller) -> Rollout:
 
         q[index] = q_now
         dq[index] = dq_now
-        q_ref[index] = ref.q
-        dq_ref[index] = ref.dq
+        q_des[index] = ref.q
+        dq_des[index] = ref.dq
+        dq_r[index] = info.dq_r
+        ddq_r[index] = info.ddq_r
         tau[index] = tau_now
         tau_raw[index] = info.tau_raw
+        disturbance_torque[index] = disturbance_now
         inertia_hat[index] = info.inertia_hat
         damping_hat[index] = info.damping_hat
+        bias_hat[index] = info.bias_hat
         end_effector[index] = ee
         target[index] = ref.target
         obstacle_centers[index] = centers
@@ -121,17 +138,24 @@ def run_rollout(config: ProjectConfig, controller: Controller) -> Rollout:
         collision[index] = clearance_result.collision
         saturated[index] = info.saturated
 
+        if index < n_steps - 1:
+            plant.step(info.tau, dt, float(t))
+
     return Rollout(
         label=controller.name,
         time=time,
         q=q,
         dq=dq,
-        q_ref=q_ref,
-        dq_ref=dq_ref,
+        q_des=q_des,
+        dq_des=dq_des,
+        dq_r=dq_r,
+        ddq_r=ddq_r,
         tau=tau,
         tau_raw=tau_raw,
+        disturbance_torque=disturbance_torque,
         inertia_hat=inertia_hat,
         damping_hat=damping_hat,
+        bias_hat=bias_hat,
         end_effector=end_effector,
         target=target,
         obstacle_centers=obstacle_centers,
@@ -147,9 +171,22 @@ def run_rollout(config: ProjectConfig, controller: Controller) -> Rollout:
     )
 
 
-def summarize_rollout(config: ProjectConfig, rollout: Rollout) -> dict[str, float]:
+def summarize_rollout(config: ProjectConfig, rollout: Rollout) -> dict[str, object]:
     tail = max(1, int(round(config.simulation.tail_window_seconds / config.simulation.dt)))
     tail_error = rollout.target_error[-tail:]
+    tail_sliding = rollout.sliding_norm[-tail:]
+    finite_augmented = rollout.augmented_lyapunov[np.isfinite(rollout.augmented_lyapunov)]
+    augmented_initial = float(finite_augmented[0]) if finite_augmented.size else None
+    augmented_final = float(finite_augmented[-1]) if finite_augmented.size else None
+    augmented_drop_fraction = (
+        float((augmented_initial - augmented_final) / augmented_initial)
+        if augmented_initial is not None
+        and augmented_final is not None
+        and abs(augmented_initial) > 1e-12
+        else None
+    )
+    augmented_increments = np.diff(finite_augmented) if finite_augmented.size > 1 else np.array([])
+    positive_augmented_increments = augmented_increments[augmented_increments > 1e-12]
     return {
         "final_target_error_px": float(rollout.target_error[-1]),
         "mean_target_error_px": float(np.mean(rollout.target_error)),
@@ -162,8 +199,110 @@ def summarize_rollout(config: ProjectConfig, rollout: Rollout) -> dict[str, floa
         "saturation_fraction": float(np.mean(rollout.saturated)),
         "final_q_error_norm_rad": float(rollout.q_error_norm[-1]),
         "tail_mean_q_error_norm_rad": float(np.mean(rollout.q_error_norm[-tail:])),
+        "final_sliding_norm": float(rollout.sliding_norm[-1]),
+        "tail_mean_sliding_norm": float(np.mean(tail_sliding)),
+        "max_sliding_norm": float(np.max(rollout.sliding_norm)),
         "rms_torque": float(np.sqrt(np.mean(np.sum(rollout.tau * rollout.tau, axis=1)))),
+        "rms_external_torque": float(
+            np.sqrt(np.mean(np.sum(rollout.disturbance_torque * rollout.disturbance_torque, axis=1)))
+        ),
+        "max_external_torque": float(np.max(np.linalg.norm(rollout.disturbance_torque, axis=1))),
+        "tracking_lyapunov_initial": float(rollout.tracking_lyapunov[0]),
+        "tracking_lyapunov_final": float(rollout.tracking_lyapunov[-1]),
+        "tracking_lyapunov_tail_mean": float(np.mean(rollout.tracking_lyapunov[-tail:])),
+        "augmented_lyapunov_initial": augmented_initial,
+        "augmented_lyapunov_final": augmented_final,
+        "augmented_lyapunov_drop_fraction": augmented_drop_fraction,
+        "augmented_lyapunov_positive_step_count": float(positive_augmented_increments.size),
+        "augmented_lyapunov_max_positive_step": (
+            float(np.max(positive_augmented_increments)) if positive_augmented_increments.size else 0.0
+        ),
+        "final_inertia_hat": _finite_list_or_none(rollout.inertia_hat[-1]),
+        "final_damping_hat": _finite_list_or_none(rollout.damping_hat[-1]),
+        "final_bias_hat": _finite_list_or_none(rollout.bias_hat[-1]),
+        "final_inertia_error_norm": _parameter_error_norm(rollout.inertia_hat[-1], config.dynamics.true_inertia),
+        "final_damping_error_norm": _parameter_error_norm(rollout.damping_hat[-1], config.dynamics.true_damping),
+        "final_bias_error_norm": _parameter_error_norm(
+            rollout.bias_hat[-1],
+            config.dynamics.disturbance_constant,
+        ),
     }
+
+
+def save_rollout_data_csv(rollouts: dict[str, Rollout], path: str | Path) -> Path:
+    """Save synchronized rollout samples for report tables or external plotting."""
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    first_rollout = next(iter(rollouts.values()))
+    n_joints = int(first_rollout.q.shape[1])
+    joint_fields = [
+        *(f"q{j + 1}" for j in range(n_joints)),
+        *(f"dq{j + 1}" for j in range(n_joints)),
+        *(f"q_d{j + 1}" for j in range(n_joints)),
+        *(f"dq_d{j + 1}" for j in range(n_joints)),
+        *(f"dq_r{j + 1}" for j in range(n_joints)),
+        *(f"ddq_r{j + 1}" for j in range(n_joints)),
+        *(f"tau{j + 1}" for j in range(n_joints)),
+        *(f"tau_raw{j + 1}" for j in range(n_joints)),
+        *(f"inertia_hat{j + 1}" for j in range(n_joints)),
+        *(f"damping_hat{j + 1}" for j in range(n_joints)),
+        *(f"bias_hat{j + 1}" for j in range(n_joints)),
+        *(f"disturbance{j + 1}" for j in range(n_joints)),
+    ]
+    fieldnames = [
+        "controller",
+        "time_s",
+        "target_x_px",
+        "target_y_px",
+        "end_effector_x_px",
+        "end_effector_y_px",
+        "target_error_px",
+        "q_error_norm_rad",
+        "sliding_norm",
+        "tracking_lyapunov",
+        "augmented_lyapunov",
+        "clearance_px",
+        "reference_clearance_px",
+        "collision",
+        "saturated",
+        *joint_fields,
+    ]
+    with output_path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        for label, rollout in rollouts.items():
+            for index, time in enumerate(rollout.time):
+                row = {
+                    "controller": label,
+                    "time_s": float(time),
+                    "target_x_px": float(rollout.target[index, 0]),
+                    "target_y_px": float(rollout.target[index, 1]),
+                    "end_effector_x_px": float(rollout.end_effector[index, 0]),
+                    "end_effector_y_px": float(rollout.end_effector[index, 1]),
+                    "target_error_px": float(rollout.target_error[index]),
+                    "q_error_norm_rad": float(rollout.q_error_norm[index]),
+                    "sliding_norm": float(rollout.sliding_norm[index]),
+                    "tracking_lyapunov": float(rollout.tracking_lyapunov[index]),
+                    "augmented_lyapunov": _csv_number(rollout.augmented_lyapunov[index]),
+                    "clearance_px": float(rollout.clearance[index]),
+                    "reference_clearance_px": float(rollout.reference_clearance[index]),
+                    "collision": int(rollout.collision[index]),
+                    "saturated": int(rollout.saturated[index]),
+                }
+                row.update(_joint_row("q", rollout.q[index]))
+                row.update(_joint_row("dq", rollout.dq[index]))
+                row.update(_joint_row("q_d", rollout.q_des[index]))
+                row.update(_joint_row("dq_d", rollout.dq_des[index]))
+                row.update(_joint_row("dq_r", rollout.dq_r[index]))
+                row.update(_joint_row("ddq_r", rollout.ddq_r[index]))
+                row.update(_joint_row("tau", rollout.tau[index]))
+                row.update(_joint_row("tau_raw", rollout.tau_raw[index]))
+                row.update(_joint_row("inertia_hat", rollout.inertia_hat[index]))
+                row.update(_joint_row("damping_hat", rollout.damping_hat[index]))
+                row.update(_joint_row("bias_hat", rollout.bias_hat[index]))
+                row.update(_joint_row("disturbance", rollout.disturbance_torque[index]))
+                writer.writerow(row)
+    return output_path
 
 
 def _augmented_lyapunov(config: ProjectConfig, name: str, info) -> float:
@@ -171,9 +310,32 @@ def _augmented_lyapunov(config: ProjectConfig, name: str, info) -> float:
         return float("nan")
     inertia_error = info.inertia_hat - config.dynamics.true_inertia
     damping_error = info.damping_hat - config.dynamics.true_damping
+    bias_error = info.bias_hat - config.dynamics.disturbance_constant
     return (
         0.5 * float(np.sum(config.dynamics.true_inertia * info.sliding_error * info.sliding_error))
         + 0.5 * float(np.sum(inertia_error * inertia_error / config.adaptive_controller.gamma_inertia))
         + 0.5 * float(np.sum(damping_error * damping_error / config.adaptive_controller.gamma_damping))
+        + 0.5 * float(np.sum(bias_error * bias_error / config.adaptive_controller.gamma_bias))
     )
 
+
+def _finite_list_or_none(values: np.ndarray) -> list[float] | None:
+    values = np.asarray(values, dtype=float)
+    if not np.all(np.isfinite(values)):
+        return None
+    return [float(value) for value in values]
+
+
+def _parameter_error_norm(values: np.ndarray, true_values: np.ndarray) -> float | None:
+    values = np.asarray(values, dtype=float)
+    if not np.all(np.isfinite(values)):
+        return None
+    return float(np.linalg.norm(values - true_values))
+
+
+def _csv_number(value: float) -> float | str:
+    return float(value) if np.isfinite(value) else ""
+
+
+def _joint_row(prefix: str, values: np.ndarray) -> dict[str, float | str]:
+    return {f"{prefix}{index + 1}": _csv_number(value) for index, value in enumerate(values)}

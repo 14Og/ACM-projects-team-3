@@ -95,28 +95,36 @@ class JointSpacePlant:
         self.inertia = np.asarray(cfg.true_inertia, dtype=float)
         self.damping = np.asarray(cfg.true_damping, dtype=float)
         self.torque_limits = np.asarray(cfg.torque_limits, dtype=float)
+        self.disturbance_constant = np.asarray(cfg.disturbance_constant, dtype=float)
+        self.disturbance_amplitude = np.asarray(cfg.disturbance_amplitude, dtype=float)
+        self.disturbance_frequency = np.asarray(cfg.disturbance_frequency, dtype=float)
 
-    def acceleration(self, dq: np.ndarray, tau: np.ndarray) -> np.ndarray:
-        return (tau - self.damping * dq) / self.inertia
+    def disturbance(self, time: float) -> np.ndarray:
+        return self.disturbance_constant + self.disturbance_amplitude * np.sin(
+            self.disturbance_frequency * float(time)
+        )
 
-    def step(self, tau: np.ndarray, dt: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def acceleration(self, dq: np.ndarray, tau: np.ndarray, time: float) -> np.ndarray:
+        return (tau + self.disturbance(time) - self.damping * dq) / self.inertia
+
+    def step(self, tau: np.ndarray, dt: float, time: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Integrate with constant torque using RK4."""
         tau = np.clip(np.asarray(tau, dtype=float), -self.torque_limits, self.torque_limits)
         q0 = self.q.copy()
         dq0 = self.dq.copy()
 
-        def rhs(q: np.ndarray, dq: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        def rhs(q: np.ndarray, dq: np.ndarray, stage_time: float) -> tuple[np.ndarray, np.ndarray]:
             del q
-            return dq, self.acceleration(dq, tau)
+            return dq, self.acceleration(dq, tau, stage_time)
 
-        k1_q, k1_dq = rhs(q0, dq0)
-        k2_q, k2_dq = rhs(q0 + 0.5 * dt * k1_q, dq0 + 0.5 * dt * k1_dq)
-        k3_q, k3_dq = rhs(q0 + 0.5 * dt * k2_q, dq0 + 0.5 * dt * k2_dq)
-        k4_q, k4_dq = rhs(q0 + dt * k3_q, dq0 + dt * k3_dq)
+        k1_q, k1_dq = rhs(q0, dq0, time)
+        k2_q, k2_dq = rhs(q0 + 0.5 * dt * k1_q, dq0 + 0.5 * dt * k1_dq, time + 0.5 * dt)
+        k3_q, k3_dq = rhs(q0 + 0.5 * dt * k2_q, dq0 + 0.5 * dt * k2_dq, time + 0.5 * dt)
+        k4_q, k4_dq = rhs(q0 + dt * k3_q, dq0 + dt * k3_dq, time + dt)
 
         self.q = wrap_angles(q0 + (dt / 6.0) * (k1_q + 2.0 * k2_q + 2.0 * k3_q + k4_q))
         self.dq = dq0 + (dt / 6.0) * (k1_dq + 2.0 * k2_dq + 2.0 * k3_dq + k4_dq)
-        return self.q.copy(), self.dq.copy(), tau
+        return self.q.copy(), self.dq.copy(), tau, self.disturbance(time)
 
 
 def closest_point_on_segment(point: np.ndarray, start: np.ndarray, end: np.ndarray) -> np.ndarray:
@@ -133,6 +141,5 @@ def wrap_angles(q: np.ndarray) -> np.ndarray:
     return (np.asarray(q, dtype=float) + np.pi) % (2.0 * np.pi) - np.pi
 
 
-def angle_error(q: np.ndarray, q_ref: np.ndarray) -> np.ndarray:
-    return wrap_angles(np.asarray(q, dtype=float) - np.asarray(q_ref, dtype=float))
-
+def angle_error(q: np.ndarray, q_des: np.ndarray) -> np.ndarray:
+    return wrap_angles(np.asarray(q, dtype=float) - np.asarray(q_des, dtype=float))

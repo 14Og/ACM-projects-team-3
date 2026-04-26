@@ -39,7 +39,8 @@ def save_all_plots(
     figures_dir.mkdir(parents=True, exist_ok=True)
     return [
         _save_workspace(config, arm, rollouts, figures_dir),
-        _save_errors(rollouts, figures_dir),
+        _save_errors(config, rollouts, figures_dir),
+        _save_lyapunov_values(rollouts, figures_dir),
         _save_parameters(config, rollouts["adaptive"], figures_dir),
         _save_control_clearance(config, rollouts, figures_dir),
     ]
@@ -63,7 +64,7 @@ def save_animation(
     if frames[-1] != adaptive.time.size - 1:
         frames = np.append(frames, adaptive.time.size - 1)
 
-    fig, (ax_scene, ax_error) = plt.subplots(
+    fig, (ax_scene, ax_lyapunov) = plt.subplots(
         1,
         2,
         figsize=(13, 6),
@@ -88,21 +89,29 @@ def save_animation(
     text = ax_scene.text(0.02, 0.98, "", transform=ax_scene.transAxes, va="top")
     ax_scene.legend(loc="lower left", fontsize=9)
 
-    for key, rollout in rollouts.items():
-        ax_error.plot(
-            rollout.time,
-            rollout.target_error,
+    lyapunov_series = {
+        "adaptive": adaptive.tracking_lyapunov,
+        "fixed_lyapunov": fixed.tracking_lyapunov,
+        "plain_pd": pd.tracking_lyapunov,
+    }
+    normalized_lyapunov = {
+        key: _normalize_positive(series) for key, series in lyapunov_series.items()
+    }
+    for key, series in normalized_lyapunov.items():
+        ax_lyapunov.plot(
+            rollouts[key].time,
+            series,
             color=COLORS[key],
             lw=1.4,
-            label=LABELS[key],
+            label=f"{LABELS[key]} V_e / V_e(0)",
         )
-    time_marker = ax_error.axvline(0.0, color="black", lw=1.0, alpha=0.7)
-    ax_error.axhline(config.target.threshold, color="black", lw=1.0, ls="--", label="target threshold")
-    ax_error.set_title("End-effector target error")
-    ax_error.set_xlabel("time [s]")
-    ax_error.set_ylabel("error [px]")
-    ax_error.grid(alpha=0.28)
-    ax_error.legend(fontsize=9)
+    time_marker = ax_lyapunov.axvline(0.0, color="black", lw=1.0, alpha=0.7)
+    ax_lyapunov.set_title("Comparable Tracking Lyapunov Values")
+    ax_lyapunov.set_xlabel("time [s]")
+    ax_lyapunov.set_ylabel("normalized value")
+    ax_lyapunov.set_ylim(0.0, 1.08 * max(float(np.max(v)) for v in normalized_lyapunov.values()))
+    ax_lyapunov.grid(alpha=0.28)
+    ax_lyapunov.legend(fontsize=8)
 
     def update(frame_number: int):
         index = int(frames[frame_number])
@@ -122,8 +131,9 @@ def save_animation(
         time_marker.set_xdata([adaptive.time[index], adaptive.time[index]])
         text.set_text(
             f"t = {adaptive.time[index]:.1f} s\n"
-            f"adaptive error = {adaptive.target_error[index]:.1f} px\n"
-            f"fixed error = {fixed.target_error[index]:.1f} px\n"
+            f"adaptive V_e = {adaptive.tracking_lyapunov[index]:.3f}\n"
+            f"fixed V_e = {fixed.tracking_lyapunov[index]:.3f}\n"
+            f"PD V_e = {pd.tracking_lyapunov[index]:.3f}\n"
             f"clearance = {adaptive.clearance[index]:.1f} px"
         )
         return (
@@ -184,16 +194,34 @@ def _save_workspace(
     return path
 
 
-def _save_errors(rollouts: dict[str, Rollout], figures_dir: Path) -> Path:
+def _normalize_positive(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=float)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return np.zeros_like(values)
+    initial = finite[0]
+    if abs(initial) <= 1e-12:
+        initial = max(float(np.max(np.abs(finite))), 1.0)
+    return np.nan_to_num(values / initial, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def _save_errors(config: ProjectConfig, rollouts: dict[str, Rollout], figures_dir: Path) -> Path:
     path = figures_dir / "tracking_errors.png"
     fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
     for key, rollout in rollouts.items():
         axes[0].plot(rollout.time, rollout.target_error, color=COLORS[key], label=LABELS[key])
         axes[1].plot(rollout.time, rollout.q_error_norm, color=COLORS[key], label=LABELS[key])
+    axes[0].axhline(
+        config.target.threshold,
+        color="black",
+        lw=1.0,
+        ls="--",
+        label="target threshold",
+    )
     axes[0].set_title("End-Effector Target Error")
     axes[0].set_ylabel("error [px]")
-    axes[1].set_title("Joint Reference Tracking Error")
-    axes[1].set_ylabel("||q - q_ref|| [rad]")
+    axes[1].set_title("Joint Desired-Trajectory Tracking Error")
+    axes[1].set_ylabel("||q - q_d|| [rad]")
     axes[1].set_xlabel("time [s]")
     for ax in axes:
         ax.grid(alpha=0.28)
@@ -204,19 +232,71 @@ def _save_errors(rollouts: dict[str, Rollout], figures_dir: Path) -> Path:
     return path
 
 
+def _save_lyapunov_values(rollouts: dict[str, Rollout], figures_dir: Path) -> Path:
+    path = figures_dir / "lyapunov_values.png"
+    adaptive = rollouts["adaptive"]
+    augmented = adaptive.augmented_lyapunov
+    positive_augmented = np.maximum(augmented, 1e-12)
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    axes[0].semilogy(
+        adaptive.time,
+        positive_augmented,
+        color=COLORS["adaptive"],
+        lw=2.0,
+        label="adaptive augmented V",
+    )
+    axes[0].scatter(
+        [adaptive.time[0], adaptive.time[-1]],
+        [positive_augmented[0], positive_augmented[-1]],
+        color=COLORS["adaptive"],
+        s=35,
+        zorder=4,
+    )
+    axes[0].set_title(
+        f"Adaptive Lyapunov Decrease: V(0)={augmented[0]:.2f}, V(T)={augmented[-1]:.2f}"
+    )
+    axes[0].set_ylabel("augmented V (log scale)")
+    axes[0].grid(alpha=0.28, which="both")
+    axes[0].legend()
+
+    for key, rollout in rollouts.items():
+        axes[1].plot(
+            rollout.time,
+            rollout.tracking_lyapunov,
+            color=COLORS[key],
+            lw=1.5,
+            label=LABELS[key],
+        )
+    axes[1].set_title("Tracking Lyapunov Candidate Across Controllers")
+    axes[1].set_xlabel("time [s]")
+    axes[1].set_ylabel("V_e = 0.5(||e||^2 + ||de||^2)")
+    axes[1].grid(alpha=0.28)
+    axes[1].legend()
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    return path
+
+
 def _save_parameters(config: ProjectConfig, adaptive: Rollout, figures_dir: Path) -> Path:
     path = figures_dir / "adaptive_parameter_estimates.png"
-    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
     for joint in range(config.robot.link_lengths.size):
         axes[0].plot(adaptive.time, adaptive.inertia_hat[:, joint], label=f"I_hat_{joint + 1}")
         axes[0].axhline(config.dynamics.true_inertia[joint], lw=1.0, ls="--", alpha=0.7)
         axes[1].plot(adaptive.time, adaptive.damping_hat[:, joint], label=f"D_hat_{joint + 1}")
         axes[1].axhline(config.dynamics.true_damping[joint], lw=1.0, ls="--", alpha=0.7)
+        axes[2].plot(adaptive.time, adaptive.bias_hat[:, joint], label=f"b_hat_{joint + 1}")
+        axes[2].axhline(config.dynamics.disturbance_constant[joint], lw=1.0, ls="--", alpha=0.7)
     axes[0].set_title("Adaptive Inertia Estimates")
     axes[0].set_ylabel("inertia")
     axes[1].set_title("Adaptive Damping Estimates")
     axes[1].set_ylabel("damping")
-    axes[1].set_xlabel("time [s]")
+    axes[2].set_title("Adaptive Constant Bias Estimates")
+    axes[2].set_ylabel("bias torque")
+    axes[2].set_xlabel("time [s]")
     for ax in axes:
         ax.grid(alpha=0.28)
         ax.legend(ncol=3, fontsize=9)
@@ -264,4 +344,3 @@ def _setup_scene_axes(config: ProjectConfig, ax: plt.Axes) -> None:
     ax.set_xlabel("x [px]")
     ax.set_ylabel("y [px]")
     ax.grid(alpha=0.24)
-
