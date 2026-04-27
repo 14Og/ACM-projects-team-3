@@ -212,8 +212,8 @@ H \ddot q + D \dot q = \tau + b + w(t).
 
 Definitions:
 
-- $H = \mathrm{diag}(H_1,H_2,H_3)$ is the true positive diagonal inertia matrix.
-- $D = \mathrm{diag}(D_1,D_2,D_3)$ is the true positive diagonal viscous damping matrix.
+- $H = diag(H_1,H_2,H_3)$ is the true positive diagonal inertia matrix.
+- $D = diag(D_1,D_2,D_3)$ is the true positive diagonal viscous damping matrix.
 - $b \in \mathbb{R}^3$ is an unknown constant joint-torque bias.
 - $w(t) \in \mathbb{R}^3$ is an optional bounded time-varying joint disturbance.
 - $\tau$ is clipped to the configured actuator limits before integration.
@@ -289,7 +289,7 @@ d_{ij} = \|\delta_{ij}\|,
 For $\chi_{ij}$ below the influence distance, the code adds a repulsive point
 velocity in the direction $\delta_{ij} / d_{ij}$, then maps it into joint space using
 $J_i(q_d)^T$. The final desired joint velocity is clipped to
-$\mathrm{max\_joint\_speed}$ and integrated to update $q_d$.
+the configured `max_joint_speed` and integrated to update $q_d$.
 
 This planner is heuristic. The formal control proof below is a reference
 tracking proof: if the generated reference is bounded and differentiable, the
@@ -363,7 +363,7 @@ Its torque law is
 K_s s,
 ```
 
-where $K_s = \mathrm{diag}(k_{s,1},k_{s,2},k_{s,3})$ is positive definite.
+where $K_s = diag(k_{s,1},k_{s,2},k_{s,3})$ is positive definite.
 
 For joint `i`, the regressor form is
 
@@ -428,14 +428,7 @@ z_i, & |z_i| \le 1, \\
 \end{cases}
 ```
 
-The current implementation sets
-
-```text
-K_R = 2 K_s
-\rho = 5.0
-\varepsilon = 0.5
-```
-
+The current implementation sets $K_R = 2K_s$, $\rho = 5.0$, and $\varepsilon = 0.5$
 inside `RobustAdaptiveController`. These robust gains are currently hard-coded
 in `src/controller.py`, while the base adaptive gains are read from
 `configs/default.json`.
@@ -647,7 +640,7 @@ Lyapunov candidate gives
 s^T w(t).
 ```
 
-Since $s^T \operatorname{sat}(s/\varepsilon) \ge 0$,
+Since $s^T sat(s/\varepsilon) \ge 0$,
 
 ```math
 \dot V
@@ -701,8 +694,8 @@ b
 w(t).
 ```
 
-persistent forcing term. Even if $K_s$ is positive, the constant bias and model mismatch act as a
-The result is steady-state tracking error or large
+Even if $K_s$ is positive, the constant bias and model mismatch act as a
+persistent forcing term. The result is steady-state tracking error or large
 oscillation unless the feedback gain is made large enough to hide the mismatch.
 This is exactly what the plots show: the fixed Lyapunov and PD baselines remain
 well above the adaptive methods under the same disturbance.
@@ -723,7 +716,7 @@ For each controller and each simulation step:
 8. Compute controller torque:
    - pure adaptive: $\hat H \ddot q_r + \hat D \dot q - \hat b - K_s s$,
    - robust adaptive: pure adaptive torque minus
-     $\rho\,\operatorname{sat}(s/\varepsilon)$ and with larger $K_R$,
+     $\rho\,sat(s/\varepsilon)$ and with larger $K_R$,
    - fixed baseline: $H_0 \ddot q_r + D_0 \dot q - K_s s$,
    - PD baseline: $-K_p e - K_d \dot e$.
 9. Clip torque to actuator bounds.
