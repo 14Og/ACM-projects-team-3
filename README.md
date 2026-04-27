@@ -93,7 +93,7 @@ q_1 & q_2 & q_3
 \end{bmatrix}^T.
 ```
 
-Here `q_i` is the angle of joint `i` in radians and `dot q_i` is its angular
+Here $q_i$ is the angle of joint $i$ in radians and $\dot q_i$ is its angular
 velocity. The control input is the joint torque vector
 
 ```math
@@ -150,7 +150,7 @@ L_k
 \qquad i=1,2,3.
 ```
 
-The end-effector position is `p_3(q)`. The point Jacobian for endpoint `i` is
+The end-effector position is $p_3(q)$. The point Jacobian for endpoint $i$ is
 denoted by
 
 ```math
@@ -212,11 +212,11 @@ H \ddot q + D \dot q = \tau + b + w(t).
 
 Definitions:
 
-- `H = diag(H_1,H_2,H_3)` is the true positive diagonal inertia matrix.
-- `D = diag(D_1,D_2,D_3)` is the true positive diagonal viscous damping matrix.
-- `b in R^3` is an unknown constant joint-torque bias.
-- `w(t) in R^3` is an optional bounded time-varying joint disturbance.
-- `tau` is clipped to the configured actuator limits before integration.
+- $H = \mathrm{diag}(H_1,H_2,H_3)$ is the true positive diagonal inertia matrix.
+- $D = \mathrm{diag}(D_1,D_2,D_3)$ is the true positive diagonal viscous damping matrix.
+- $b \in \mathbb{R}^3$ is an unknown constant joint-torque bias.
+- $w(t) \in \mathbb{R}^3$ is an optional bounded time-varying joint disturbance.
+- $\tau$ is clipped to the configured actuator limits before integration.
 
 The default values are
 
@@ -239,9 +239,9 @@ H_i & D_i & b_i
 \end{bmatrix}^T.
 ```
 
-The time-varying part `w(t)` is not part of this parameter vector. The pure
-adaptive asymptotic proof therefore applies exactly to the case `w(t)=0`; with
-nonzero `w(t)`, pure adaptive control is a stress test. The robust adaptive
+The time-varying part $w(t)$ is not part of this parameter vector. The pure
+adaptive asymptotic proof therefore applies exactly to the case $w(t)=0$; with
+nonzero $w(t)$, pure adaptive control is a stress test. The robust adaptive
 controller adds a sliding term to improve bounded-disturbance rejection.
 
 ## Reference Generator
@@ -286,10 +286,10 @@ d_{ij} = \|\delta_{ij}\|,
 \chi_{ij} = d_{ij} - r_{obs} - m_{safe}.
 ```
 
-For `chi_ij` below the influence distance, the code adds a repulsive point
-velocity in the direction `delta_ij / d_ij`, then maps it into joint space using
-`J_i(q_d)^T`. The final desired joint velocity is clipped to
-`max_joint_speed` and integrated to update `q_d`.
+For $\chi_{ij}$ below the influence distance, the code adds a repulsive point
+velocity in the direction $\delta_{ij} / d_{ij}$, then maps it into joint space using
+$J_i(q_d)^T$. The final desired joint velocity is clipped to
+$\mathrm{max\_joint\_speed}$ and integrated to update $q_d$.
 
 This planner is heuristic. The formal control proof below is a reference
 tracking proof: if the generated reference is bounded and differentiable, the
@@ -327,7 +327,7 @@ Since
 \dot s = \ddot q - \ddot q_r,
 ```
 
-controlling `s` controls both the position and velocity tracking errors through
+controlling $s$ controls both the position and velocity tracking errors through
 the stable first-order relation
 
 ```math
@@ -363,7 +363,7 @@ Its torque law is
 K_s s,
 ```
 
-where `K_s = diag(k_{s,1},k_{s,2},k_{s,3})` is positive definite.
+where $K_s = \mathrm{diag}(k_{s,1},k_{s,2},k_{s,3})$ is positive definite.
 
 For joint `i`, the regressor form is
 
@@ -393,7 +393,7 @@ The update laws are
 \dot{\hat b}_i = \gamma_{b_i} s_i,
 ```
 
-with positive adaptation gains `gamma_H_i`, `gamma_D_i`, and `gamma_b_i`.
+with positive adaptation gains $\gamma_{H_i}$, $\gamma_{D_i}$, and $\gamma_{b_i}$.
 The implementation projects the estimates into configured bounds to keep them
 finite in discrete time.
 
@@ -432,8 +432,8 @@ The current implementation sets
 
 ```text
 K_R = 2 K_s
-rho = 5.0
-epsilon = 0.5
+\rho = 5.0
+\varepsilon = 0.5
 ```
 
 inside `RobustAdaptiveController`. These robust gains are currently hard-coded
@@ -441,7 +441,7 @@ in `src/controller.py`, while the base adaptive gains are read from
 `configs/default.json`.
 
 The purpose of the extra term is to dissipate energy caused by the bounded
-unmodeled disturbance `w(t)`. It trades a small boundary layer around `s = 0`
+unmodeled disturbance $w(t)$. It trades a small boundary layer around $s = 0$
 for improved disturbance rejection.
 
 ## Baseline Controllers
@@ -459,8 +459,8 @@ D_0 \dot q
 K_s s.
 ```
 
-It uses incorrect nominal values `H_0` and `D_0`, and it has no estimate of the
-constant bias `b`.
+It uses incorrect nominal values $H_0$ and $D_0$, and it has no estimate of the
+constant bias $b$.
 
 The plain PD baseline is
 
@@ -475,7 +475,7 @@ tracking under uncertainty compared with adaptive and robust adaptive control.
 ## Lyapunov Proof for Pure Adaptive Control
 
 This proof is for the nominal adaptive model with unknown constant
-`H`, `D`, and `b`, and with `w(t)=0`. It also assumes no actuator saturation,
+$H$, $D$, and $b$, and with $w(t)=0$. It also assumes no actuator saturation,
 exact state measurement, bounded differentiable reference signals, and positive
 diagonal inertia.
 
@@ -489,7 +489,7 @@ Define parameter errors
 \tilde b = \hat b - b.
 ```
 
-Using `dot s = ddot q - ddot q_r` and the plant equation
+Using $\dot s = \ddot q - \ddot q_r$ and the plant equation
 
 ```math
 H\ddot q + D\dot q = \tau + b,
@@ -534,9 +534,9 @@ V
 \frac{\tilde b_i^2}{2\gamma_{b_i}}.
 ```
 
-Because `H`, `D`, and `b` are constant,
-`dot tilde H = dot hat H`, `dot tilde D = dot hat D`, and
-`dot tilde b = dot hat b`. Therefore
+Because $H$, $D$, and $b$ are constant,
+$\dot{\tilde H} = \dot{\hat H}$, $\dot{\tilde D} = \dot{\hat D}$, and
+$\dot{\tilde b} = \dot{\hat b}$. Therefore
 
 ```math
 \dot V
@@ -592,7 +592,7 @@ All parameter-error cross terms cancel:
 \dot V = -s^T K_s s \le 0.
 ```
 
-Thus `V(t)` is nonincreasing, `s` is bounded, and all projected parameter
+Thus $V(t)$ is nonincreasing, $s$ is bounded, and all projected parameter
 estimates stay bounded. Since
 
 ```math
@@ -604,14 +604,14 @@ V(0) - V(\infty)
 ```
 
 the filtered error is square integrable. Under the standard bounded-reference
-and bounded-regressor assumptions, `dot s` is bounded. Barbalat's lemma then
+and bounded-regressor assumptions, $\dot s$ is bounded. Barbalat's lemma then
 gives
 
 ```math
 s(t) \to 0.
 ```
 
-Finally, `dot e + lambda e = s` is an exponentially stable linear filter driven
+Finally, $\dot e + \lambda e = s$ is an exponentially stable linear filter driven
 by an input that converges to zero. Therefore
 
 ```math
@@ -647,7 +647,7 @@ Lyapunov candidate gives
 s^T w(t).
 ```
 
-Since `s^T sat(s/epsilon) >= 0`,
+Since $s^T \operatorname{sat}(s/\varepsilon) \ge 0$,
 
 ```math
 \dot V
@@ -657,7 +657,7 @@ Since `s^T sat(s/epsilon) >= 0`,
 \|s\|\,\bar w.
 ```
 
-Therefore `dot V < 0` whenever
+Therefore $\dot V < 0$ whenever
 
 ```math
 \|s\| > \frac{\bar w}{\lambda_{min}(K_R)}.
@@ -665,9 +665,9 @@ Therefore `dot V < 0` whenever
 
 This proves ultimate boundedness of the filtered error for bounded
 disturbances. If the robust gain is selected componentwise so that
-`rho_i >= sup_t |w_i(t)|` outside the boundary layer, then the robust term can
+$\rho_i \ge \sup_t |w_i(t)|$ outside the boundary layer, then the robust term can
 cancel the worst-case disturbance component and recover a stronger decrease
-condition outside `|s_i| <= epsilon`.
+condition outside $|s_i| \le \varepsilon$.
 
 The implemented robust controller uses a finite boundary layer, so the expected
 result is practical tracking rather than exact asymptotic convergence under
@@ -701,8 +701,8 @@ b
 w(t).
 ```
 
-Even if `K_s` is positive, the constant bias and model mismatch act as a
-persistent forcing term. The result is steady-state tracking error or large
+persistent forcing term. Even if $K_s$ is positive, the constant bias and model mismatch act as a
+The result is steady-state tracking error or large
 oscillation unless the feedback gain is made large enough to hide the mismatch.
 This is exactly what the plots show: the fixed Lyapunov and PD baselines remain
 well above the adaptive methods under the same disturbance.
@@ -711,23 +711,23 @@ well above the adaptive methods under the same disturbance.
 
 For each controller and each simulation step:
 
-1. Compute the target position `p_T(t)` and target velocity `dot p_T(t)`.
-2. Compute obstacle centers `c_j(t)` unless obstacles are disabled.
-3. Update the desired reference `q_d`, `dot q_d`, `ddot q_d` using the
+1. Compute the target position $p_T(t)$ and target velocity $\dot p_T(t)$.
+2. Compute obstacle centers $c_j(t)$ unless obstacles are disabled.
+3. Update the desired reference $q_d$, $\dot q_d$, $\ddot q_d$ using the
    kinematic planner.
-4. Read the plant state `q`, `dot q`.
-5. Compute `e = q - q_d` and `dot e = dot q - dot q_d`.
-6. Compute `s = dot e + lambda e`.
-7. Compute `dot q_r = dot q_d - lambda e` and
-   `ddot q_r = ddot q_d - lambda dot e`.
+4. Read the plant state $q$, $\dot q$.
+5. Compute $e = q - q_d$ and $\dot e = \dot q - \dot q_d$.
+6. Compute $s = \dot e + \lambda e$.
+7. Compute $\dot q_r = \dot q_d - \lambda e$ and
+   $\ddot q_r = \ddot q_d - \lambda \dot e$.
 8. Compute controller torque:
-   - pure adaptive: `hat H ddot q_r + hat D dot q - hat b - K_s s`,
+   - pure adaptive: $\hat H \ddot q_r + \hat D \dot q - \hat b - K_s s$,
    - robust adaptive: pure adaptive torque minus
-     `rho sat(s/epsilon)` and with larger `K_R`,
-   - fixed baseline: `H_0 ddot q_r + D_0 dot q - K_s s`,
-   - PD baseline: `-K_p e - K_d dot e`.
+     $\rho\,\operatorname{sat}(s/\varepsilon)$ and with larger $K_R$,
+   - fixed baseline: $H_0 \ddot q_r + D_0 \dot q - K_s s$,
+   - PD baseline: $-K_p e - K_d \dot e$.
 9. Clip torque to actuator bounds.
-10. For adaptive controllers, update `hat H`, `hat D`, and `hat b`.
+10. For adaptive controllers, update $\hat H$, $\hat D$, and $\hat b$.
 11. Integrate the true plant with RK4.
 12. Record state, target error, joint error, sliding norm, torques,
     disturbance, clearance, saturation, parameter estimates, and Lyapunov
@@ -754,18 +754,18 @@ Default configuration values:
 | sinusoidal disturbance amplitude | `[9, 8, 4]` |
 | sinusoidal disturbance frequency | `[5, 9, 3]` |
 | torque limits | `[60, 60, 60]` |
-| adaptive `lambda` | `2.0` |
+| adaptive $\lambda$ | `2.0` |
 | pure adaptive sliding gain | `[6, 4, 3]` |
 | robust sliding gain | `[12, 8, 6]` |
-| robust `rho` | `5.0` |
-| robust `epsilon` | `0.5` |
+| robust $\rho$ | `5.0` |
+| robust $\varepsilon$ | `0.5` |
 | initial inertia estimate | `[5, 3, 2]` |
 | initial damping estimate | `[2, 2, 2]` |
 | initial bias estimate | `[0, 0, 0]` |
 | fixed baseline nominal inertia | `[5, 3, 2]` |
 | fixed baseline nominal damping | `[2, 2, 2]` |
-| PD gains `K_p` | `[5, 4, 3]` |
-| PD gains `K_d` | `[2, 1.5, 1]` |
+| PD gains $K_p$ | `[5, 4, 3]` |
+| PD gains $K_d$ | `[2, 1.5, 1]` |
 
 Obstacle-enabled defaults:
 
@@ -856,14 +856,14 @@ Adaptive-controller slot comparison:
 | tail mean joint error norm | `0.646 rad` | `0.155 rad` |
 | final sliding norm | `1.422` | `0.498` |
 | tail mean sliding norm | `1.309` | `0.343` |
-| final tracking Lyapunov `V_e` | `0.300` | `0.047` |
+| final tracking Lyapunov $V_e$ | `0.300` | `0.047` |
 | RMS torque | `29.236` | `30.268` |
 | saturation fraction | `0.016` | `0.004` |
 | collision count in archived no-obstacle run | `0` | `0` |
 
 Baseline comparison from the same archived summaries:
 
-| Controller | Tail mean target error | Tail success fraction | Final `V_e` |
+| Controller | Tail mean target error | Tail success fraction | Final $V_e$ |
 |---|---:|---:|---:|
 | pure adaptive | `26.484 px` | `0.622` | `0.300` |
 | robust adaptive | `23.625 px` | `0.712` | `0.047` |
@@ -902,7 +902,7 @@ mismatch and disturbance.
 
 Figure 3. Pure adaptive Lyapunov values. The augmented adaptive Lyapunov
 quantity records the proof-oriented energy for the adaptive controller, while
-the tracking energy `V_e` gives a comparable error measure across controllers.
+the tracking energy $V_e$ gives a comparable error measure across controllers.
 
 ![Pure adaptive parameter estimates](figures/figures_pure/adaptive_parameter_estimates.png)
 
@@ -934,7 +934,7 @@ adaptive run.
 ![Robust Lyapunov values](figures/figures_robust/lyapunov_values.png)
 
 Figure 8. Robust adaptive Lyapunov-style values. The augmented candidate drops
-from `384.24` to `60.97`; the comparable tracking energy `V_e` ends at `0.047`
+from `384.24` to `60.97`; the comparable tracking energy $V_e$ ends at `0.047`
 for robust adaptive control versus `4.150` for the fixed baseline and `12.456`
 for PD.
 
@@ -966,23 +966,23 @@ and how the tracking energy evolves.
 
 | Symbol in README | Meaning | Code signal |
 |---|---|---|
-| `q_d`, `dot q_d`, `ddot q_d` | generated desired joint trajectory | `ReferenceState.q`, `ReferenceState.dq`, `ReferenceState.ddq` |
-| `e`, `dot e` | joint tracking error and velocity error | `ControlInfo.q_error`, `ControlInfo.dq_error` |
-| `s` | filtered/sliding tracking error | `ControlInfo.sliding_error` |
-| `dot q_r`, `ddot q_r` | filtered reference signals | `ControlInfo.dq_r`, `ControlInfo.ddq_r` |
-| `hat H`, `hat D`, `hat b` | adaptive estimates | `ControlInfo.inertia_hat`, `damping_hat`, `bias_hat` |
-| `V` | augmented adaptive Lyapunov candidate | `Rollout.augmented_lyapunov` |
-| `V_e` | comparable tracking energy | `Rollout.tracking_lyapunov` |
-| `tau` | clipped torque applied to plant | `Rollout.tau` |
-| `tau_raw` | commanded torque before clipping | `Rollout.tau_raw` |
+| $q_d$, $\dot q_d$, $\ddot q_d$ | generated desired joint trajectory | `ReferenceState.q`, `ReferenceState.dq`, `ReferenceState.ddq` |
+| $e$, $\dot e$ | joint tracking error and velocity error | `ControlInfo.q_error`, `ControlInfo.dq_error` |
+| $s$ | filtered/sliding tracking error | `ControlInfo.sliding_error` |
+| $\dot q_r$, $\ddot q_r$ | filtered reference signals | `ControlInfo.dq_r`, `ControlInfo.ddq_r` |
+| $\hat H$, $\hat D$, $\hat b$ | adaptive estimates | `ControlInfo.inertia_hat`, `damping_hat`, `bias_hat` |
+| $V$ | augmented adaptive Lyapunov candidate | `Rollout.augmented_lyapunov` |
+| $V_e$ | comparable tracking energy | `Rollout.tracking_lyapunov` |
+| $\tau$ | clipped torque applied to plant | `Rollout.tau` |
+| $\tau_{raw}$ | commanded torque before clipping | `Rollout.tau_raw` |
 
 ## Limitations
 
 - The plant is a diagonal joint-space model, not a full manipulator
-  `M(q), C(q,dot q), G(q)` rigid-body model.
+  $M(q), C(q,\dot q), G(q)$ rigid-body model.
 - The obstacle-aware reference generator is heuristic artificial potential
   fields plus damped least squares, not a control-barrier-function proof.
-- The pure adaptive convergence proof assumes `w(t)=0`; the current disturbance
+- The pure adaptive convergence proof assumes $w(t)=0$; the current disturbance
   stress test includes sinusoidal torque components.
 - The robust proof gives practical boundedness under bounded disturbances, not
   exact asymptotic convergence inside the boundary layer.
