@@ -306,7 +306,7 @@ def save_rollout_data_csv(rollouts: dict[str, Rollout], path: str | Path) -> Pat
 
 
 def _augmented_lyapunov(config: ProjectConfig, name: str, info) -> float:
-    if name != "adaptive":
+    if name not in {"adaptive", "robust"}:
         return float("nan")
     inertia_error = info.inertia_hat - config.dynamics.true_inertia
     damping_error = info.damping_hat - config.dynamics.true_damping
