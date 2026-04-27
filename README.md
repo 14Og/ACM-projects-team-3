@@ -999,3 +999,11 @@ state, input, constraints, unknown parameters, dynamics, method, proofs,
 algorithm, setup, commands, outputs, plots, animations, comparisons, and
 limitations. The fixed Lyapunov and PD baselines provide the mandatory
 Project 2 comparison against weaker alternatives.
+
+## AI Usage
+
+AI tools were used as engineering assistance during implementation and
+documentation, including code editing support, README drafting, and wording
+refinement. The control design, mathematical derivations, experiment setup,
+result verification, and final technical content were reviewed and validated
+against the actual code and generated artifacts in this repository.
