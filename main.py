@@ -1,115 +1,207 @@
-"""Entry point: load config, randomise episode, run simulation, show outputs."""
-
 from __future__ import annotations
 
 import argparse
-import sys
+import csv
+from dataclasses import replace
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-import numpy as np
+from config import ProjectConfig, default_config, load_config
+from controller import (
+    AdaptiveLyapunovController,
+    AdaptiveSimplifiedController,
+    BacksteppingFull,
+    BacksteppingSimplified,
+)
+from simulation import run_rollout, save_rollout_data_csv, summarize_rollout
+from system import PlanarArm, with_payload_error
 
-from lyapunov_apf.config import APFConfig, EnvConfig, SimConfig
-from lyapunov_apf.controller import CLFCBFController
-from lyapunov_apf.simulation import SimulationEngine
-from lyapunov_apf.visualization import Visualizer
 
-
-def print_summary(data: dict, env: EnvConfig, episode, seed: int | None) -> None:
-    err = data["err"]
-    speed = data["speed"]
-    accel = data["accel"]
-    V = data["V"]
-    tgt_speed = np.linalg.norm(data["v_ref"], axis=1)
-
-    print("Scenario")
-    print(f"  Seed                 : {seed if seed is not None else 'random'}")
-    print(f"  Target start theta   : {episode.theta0:.4f} rad")
-    print(f"  Target omega         : {episode.omega:.4f} rad/s")
-    print(f"  Sim horizon          : {episode.t_final:.2f} s")
-    print(f"  Robot start          : ({episode.p0[0]:.3f}, {episode.p0[1]:.3f})")
-    print(f"  Obstacles            : {len(episode.obstacles)}")
-    print()
-    print("Simulation summary")
-    print(f"  Final tracking error : {err[-1]:.4f}")
-    print(f"  Mean tracking error  : {np.mean(err):.4f}")
-    print(f"  Max tracking error   : {np.max(err):.4f}")
-    print(f"  Max plant speed      : {np.max(speed):.4f}")
-    print(f"  Mean target speed    : {np.mean(tgt_speed):.4f}")
-    print(f"  Max acceleration     : {np.max(accel):.4f}")
-    print(f"  V_total initial      : {V[0]:.4f}")
-    print(f"  V_total final        : {V[-1]:.4f}")
-
+CONTROLLER_CHOICES = ("adaptive", "adaptive_simp", "backstepping_full", "backstepping_simp", "all")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Lyapunov-based trajectory tracking demo on an elliptical reference path."
+        description="Compare adaptive, full backstepping, and simplified backstepping controllers."
     )
-    parser.add_argument("--seed", type=int, default=None,
-                        help="Random seed for reproducible scenario generation.")
-    parser.add_argument("--constrain-control", action=argparse.BooleanOptionalAction, default=None,
-                        help="Enable (default) or disable (--no-constrain-control) the "
-                             "box constraint -u_max <= u_j <= u_max.")
-    parser.add_argument("--feedforward", action=argparse.BooleanOptionalAction, default=None,
-                        help="Add reference acceleration a_ref to control (asymptotic "
-                             "tracking of moving targets in the no-obstacle case).")
+    parser.add_argument("--config", type=str, default=None, help="Optional JSON config path.")
+    parser.add_argument(
+        "--controller",
+        choices=CONTROLLER_CHOICES,
+        default=None,
+        help="Controller to run. Default comes from config, usually 'all'.",
+    )
+    parser.add_argument(
+        "--payload",
+        action="store_true",
+        help="Run only the unknown-payload scenario.",
+    )
+    parser.add_argument(
+        "--nominal-only",
+        action="store_true",
+        help="Run only the nominal scenario.",
+    )
     return parser.parse_args()
+
+
+def make_controller(config: ProjectConfig, name: str):
+    if name == "adaptive":
+        return AdaptiveLyapunovController(
+            config.adaptive_controller,
+            config.dynamics.torque_limits,
+        )
+    if name == "adaptive_simp":
+        return AdaptiveSimplifiedController(
+            config.adaptive_controller,
+            config.robot,
+            config.dynamics.torque_limits,
+            config.backstepping_controller,
+        )
+    if name == "backstepping_full":
+        return BacksteppingFull(
+            config.backstepping_controller,
+            config.robot,
+            config.dynamics.torque_limits,
+        )
+    if name == "backstepping_simp":
+        return BacksteppingSimplified(
+            config.backstepping_controller,
+            config.robot,
+            config.dynamics.torque_limits,
+        )
+    raise ValueError(f"Unknown controller: {name}")
+
+
+def selected_controller_names(config: ProjectConfig, override: str | None) -> list[str]:
+    selected = override or config.controller_selection.controller_type
+    if selected == "all":
+        return ["adaptive", "adaptive_simp", "backstepping_full", "backstepping_simp"]
+    return [selected]
+
+
+def selected_scenarios(args: argparse.Namespace, config: ProjectConfig) -> list[tuple[str, bool]]:
+    if args.payload and args.nominal_only:
+        raise ValueError("Use either --payload or --nominal-only, not both.")
+    if args.payload:
+        return [("payload", True)]
+    if args.nominal_only:
+        return [("nominal", False)]
+    if config.controller_selection.simulate_payload_error:
+        return [("payload", True)]
+    return [("nominal", False), ("payload", True)]
+
+
+def run_scenario(
+    *,
+    base_config: ProjectConfig,
+    scenario_label: str,
+    use_payload: bool,
+    controller_names: list[str],
+) -> dict[str, object]:
+    real_dynamics = (
+        with_payload_error(
+            base_config.dynamics,
+            base_config.controller_selection.payload_multiplier,
+        )
+        if use_payload
+        else base_config.dynamics
+    )
+
+    output_root = Path(base_config.output.figures_dir).parent / scenario_label
+    scenario_config = replace(
+        base_config,
+        output=replace(
+            base_config.output,
+            figures_dir=str(output_root / "figures"),
+            animations_dir=str(output_root / "animations"),
+        ),
+    )
+
+    rollouts = {}
+    summaries = {}
+    for controller_name in controller_names:
+        controller = make_controller(scenario_config, controller_name)
+        rollout = run_rollout(scenario_config, controller, real_dynamics=real_dynamics)
+        rollouts[controller_name] = rollout
+        summaries[controller_name] = summarize_rollout(
+            scenario_config,
+            rollout,
+            real_dynamics=real_dynamics,
+        )
+
+    figures = []
+    animations = []
+    try:
+        from visualisation import save_all_animations, save_all_plots
+
+        arm = PlanarArm(scenario_config.robot)
+        figures = save_all_plots(
+            config=scenario_config,
+            arm=arm,
+            rollouts=rollouts,
+            figures_dir=Path(scenario_config.output.figures_dir),
+            real_dynamics=real_dynamics,
+        )
+        animations = save_all_animations(
+            config=scenario_config,
+            arm=arm,
+            rollouts=rollouts,
+            animations_dir=Path(scenario_config.output.animations_dir),
+        )
+    except ModuleNotFoundError as exc:
+        print(f"plots/animations skipped: {exc}")
+    csv_path = save_rollout_data_csv(rollouts, output_root / "rollouts.csv")
+    summary_path = _save_summary_csv(summaries, output_root / "summary.csv")
+
+    return {
+        "label": scenario_label,
+        "payload": use_payload,
+        "rollouts": rollouts,
+        "summaries": summaries,
+        "figures": figures,
+        "animations": animations,
+        "csv": csv_path,
+        "summary": summary_path,
+    }
+
+
+def _save_summary_csv(summaries: dict[str, dict[str, object]], path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    keys = sorted({key for summary in summaries.values() for key in summary})
+    with path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=["controller", *keys])
+        writer.writeheader()
+        for controller, summary in summaries.items():
+            writer.writerow({"controller": controller, **summary})
+    return path
 
 
 def main() -> None:
     args = parse_args()
-    rng = np.random.default_rng(args.seed)
+    config = load_config(args.config) if args.config else default_config()
+    controller_names = selected_controller_names(config, args.controller)
+    scenarios = selected_scenarios(args, config)
 
-    env = EnvConfig()
-    sim = SimConfig()
-    apf = APFConfig()
-    if args.constrain_control is not None:
-        apf.constrain_control = args.constrain_control
-    if args.feedforward is not None:
-        apf.feedforward = args.feedforward
-    controller = CLFCBFController(apf, env.plant_radius)
-    simulation = SimulationEngine(env, sim)
-    visualizer = Visualizer()
-
-    episode = simulation.randomize_episode(rng)
-    ep = 0
-
-    plt.ion()
-
-    # Shared mutable state for key handlers
-    key_state = {"next_ep": False, "quit": False}
-    fig: plt.Figure | None = None
-    ani = None
-
-    def on_key(event) -> None:
-        if event.key == "enter":
-            key_state["next_ep"] = True
-        elif event.key == "q":
-            key_state["quit"] = True
-
-    while True:
-        ep += 1
-        data = simulation.run_simulation(episode, controller)
-        print_summary(data, env, episode, args.seed)
-
-        if ani is not None:
-            ani.event_source.stop()
-
-        fig, ani = visualizer.make_animation(data, env, episode, ep_num=ep, fig=fig)
-
-        if ep == 1:
-            fig.canvas.mpl_connect("key_press_event", on_key)
-
-        # Spin until ENTER (next episode) or q (quit)
-        key_state["next_ep"] = False
-        while not key_state["next_ep"] and not key_state["quit"]:
-            plt.pause(0.05)
-
-        if key_state["quit"]:
-            sys.exit(0)
-
-        episode = simulation.next_episode(episode, rng)
+    print(f"controllers: {', '.join(controller_names)}")
+    for scenario_label, use_payload in scenarios:
+        result = run_scenario(
+            base_config=config,
+            scenario_label=scenario_label,
+            use_payload=use_payload,
+            controller_names=controller_names,
+        )
+        print(f"\nscenario: {scenario_label}")
+        print(f"summary: {result['summary']}")
+        print(f"rollout csv: {result['csv']}")
+        if result["animations"]:
+            print("gifs:")
+            for path in result["animations"]:
+                print(f"  {path}")
+        for controller, summary in result["summaries"].items():
+            print(
+                f"  {controller}: final ||z1||={summary['final_q_error_norm_rad']:.4f}, "
+                f"tail mean ||z1||={summary['tail_mean_q_error_norm_rad']:.4f}, "
+                f"rms tau={summary['rms_torque']:.2f}"
+            )
 
 
 if __name__ == "__main__":
