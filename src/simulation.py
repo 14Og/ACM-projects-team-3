@@ -65,7 +65,7 @@ def run_rollout(config: ProjectConfig, controller: Controller) -> Rollout:
         q0=config.robot.initial_angles,
         obstacle_radius=config.obstacles.radius,
     )
-    plant = JointSpacePlant(config.robot.initial_angles, config.dynamics)
+    plant = JointSpacePlant(config.robot.initial_angles, config.dynamics, config.robot)
     controller.reset()
 
     dt = config.simulation.dt

@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
+os.environ.setdefault("MPLBACKEND", "Qt5Agg")
 import matplotlib
 
-matplotlib.use("Agg")
+try:
+    matplotlib.use("Qt5Agg", force=True)
+except Exception:
+    os.environ["MPLBACKEND"] = "Agg"
+    matplotlib.use("Agg", force=True)
 
 from .config import load_config
-from .controller import AdaptiveLyapunovController, FixedLyapunovController, PlainPDController
+from .controller import AdaptiveLyapunovController
 from .simulation import run_rollout, save_rollout_data_csv, summarize_rollout
 from .system import PlanarArm
 from .visualization import save_all_plots, save_animation, show_live_animation
@@ -47,11 +53,6 @@ def parse_args() -> argparse.Namespace:
         default=30,
         help="Frames per second for live animation (default: 30).",
     )
-    parser.add_argument(
-        "--robust",
-        action="store_true",
-        help="Use robust adaptive controller with sliding mode term (default: use adaptive).",
-    )
     return parser.parse_args()
 
 
@@ -76,29 +77,12 @@ def main() -> None:
             ),
         )
 
-    from .controller import RobustAdaptiveController
-
     controllers = {
         "adaptive": AdaptiveLyapunovController(
             config.adaptive_controller,
             config.dynamics.torque_limits,
         ),
-        "fixed_lyapunov": FixedLyapunovController(
-            config.fixed_lyapunov_controller,
-            config.dynamics.torque_limits,
-        ),
-        "plain_pd": PlainPDController(
-            config.pd_controller,
-            config.dynamics.torque_limits,
-        ),
     }
-
-    # Replace adaptive with robust if --robust flag is set
-    if args.robust:
-        controllers["adaptive"] = RobustAdaptiveController(
-            config.adaptive_controller,
-            config.dynamics.torque_limits,
-        )
 
     rollouts = {name: run_rollout(config, controller) for name, controller in controllers.items()}
     metrics = {name: summarize_rollout(config, rollout) for name, rollout in rollouts.items()}
@@ -140,12 +124,11 @@ def main() -> None:
         )
 
     print("Adaptive manipulator simulation complete")
-    for name in ["adaptive", "fixed_lyapunov", "plain_pd"]:
-        print(
-            f"  {name:15s} tail_error={metrics[name]['tail_mean_target_error_px']:.3f} px  "
-            f"min_clearance={metrics[name]['min_clearance_px']:.3f} px  "
-            f"tail_success={metrics[name]['tail_success_fraction']:.3f}"
-        )
+    print(
+        f"  adaptive          tail_error={metrics['adaptive']['tail_mean_target_error_px']:.3f} px  "
+        f"min_clearance={metrics['adaptive']['min_clearance_px']:.3f} px  "
+        f"tail_success={metrics['adaptive']['tail_success_fraction']:.3f}"
+    )
     print(
         "  final estimates: "
         f"I_hat={rollouts['adaptive'].inertia_hat[-1].round(3).tolist()}  "

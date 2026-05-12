@@ -68,8 +68,6 @@ def save_animation(
     animations_dir.mkdir(parents=True, exist_ok=True)
     path = animations_dir / "adaptive_manipulator.gif"
     primary = rollouts["adaptive"]
-    fixed = rollouts["fixed_lyapunov"]
-    pd = rollouts["plain_pd"]
     frames = np.arange(0, primary.time.size, frame_stride, dtype=int)
     if frames[-1] != primary.time.size - 1:
         frames = np.append(frames, primary.time.size - 1)
@@ -81,15 +79,11 @@ def save_animation(
         gridspec_kw={"width_ratios": [1.15, 1.0]},
     )
     primary_label = _label(primary.label)
-    fig.suptitle(f"3-DOF Manipulator: {primary_label} Control vs Lyapunov Baselines", fontsize=14)
+    fig.suptitle(f"3-DOF Manipulator: {primary_label} Control", fontsize=14)
 
     _setup_scene_axes(config, ax_scene)
     (line_primary,) = ax_scene.plot([], [], "-o", lw=3, color=_color(primary.label), label=primary_label)
-    (line_fixed,) = ax_scene.plot([], [], "-o", lw=2, color=_color(fixed.label), label=_label(fixed.label))
-    (line_pd,) = ax_scene.plot([], [], "-o", lw=2, color=_color(pd.label), label=_label(pd.label))
     (trace_primary,) = ax_scene.plot([], [], lw=1.4, color=_color(primary.label), alpha=0.7)
-    (trace_fixed,) = ax_scene.plot([], [], lw=1.1, color=_color(fixed.label), alpha=0.55)
-    (trace_pd,) = ax_scene.plot([], [], lw=1.1, color=_color(pd.label), alpha=0.55)
     (target_dot,) = ax_scene.plot([], [], "o", ms=8, color=COLORS["target"], label="moving target")
     obstacle_patches = [
         Circle((0.0, 0.0), config.obstacles.radius, fc="#868E96", ec="#343A40", alpha=0.4)
@@ -102,8 +96,6 @@ def save_animation(
 
     lyapunov_series = {
         "adaptive": primary.tracking_lyapunov,
-        "fixed_lyapunov": fixed.tracking_lyapunov,
-        "plain_pd": pd.tracking_lyapunov,
     }
     normalized_lyapunov = {
         key: _normalize_positive(series) for key, series in lyapunov_series.items()
@@ -126,16 +118,9 @@ def save_animation(
 
     def update(frame_number: int):
         index = int(frames[frame_number])
-        for line, rollout in [
-            (line_primary, primary),
-            (line_fixed, fixed),
-            (line_pd, pd),
-        ]:
-            points = arm.forward_kinematics(rollout.q[index])
-            line.set_data(points[:, 0], points[:, 1])
+        points = arm.forward_kinematics(primary.q[index])
+        line_primary.set_data(points[:, 0], points[:, 1])
         trace_primary.set_data(primary.end_effector[: index + 1, 0], primary.end_effector[: index + 1, 1])
-        trace_fixed.set_data(fixed.end_effector[: index + 1, 0], fixed.end_effector[: index + 1, 1])
-        trace_pd.set_data(pd.end_effector[: index + 1, 0], pd.end_effector[: index + 1, 1])
         target_dot.set_data([primary.target[index, 0]], [primary.target[index, 1]])
         for patch, center in zip(obstacle_patches, primary.obstacle_centers[index], strict=True):
             patch.center = (center[0], center[1])
@@ -143,17 +128,11 @@ def save_animation(
         text.set_text(
             f"t = {primary.time[index]:.1f} s\n"
             f"{primary_label} V_e = {primary.tracking_lyapunov[index]:.3f}\n"
-            f"fixed V_e = {fixed.tracking_lyapunov[index]:.3f}\n"
-            f"PD V_e = {pd.tracking_lyapunov[index]:.3f}\n"
             f"clearance = {primary.clearance[index]:.1f} px"
         )
         return (
             line_primary,
-            line_fixed,
-            line_pd,
             trace_primary,
-            trace_fixed,
-            trace_pd,
             target_dot,
             time_marker,
             text,
@@ -174,13 +153,7 @@ def show_live_animation(
     fps: int = 30,
 ) -> None:
     """Display real-time animation of the manipulator during simulation."""
-    import matplotlib
-    matplotlib.use("TkAgg")  # Use interactive backend
-
     primary = rollouts["adaptive"]
-    fixed = rollouts["fixed_lyapunov"]
-    pd = rollouts["plain_pd"]
-
     fig, (ax_scene, ax_lyapunov) = plt.subplots(
         1,
         2,
@@ -188,15 +161,11 @@ def show_live_animation(
         gridspec_kw={"width_ratios": [1.15, 1.0]},
     )
     primary_label = _label(primary.label)
-    fig.suptitle(f"3-DOF Manipulator: {primary_label} Control vs Lyapunov Baselines (Live)", fontsize=14)
+    fig.suptitle(f"3-DOF Manipulator: {primary_label} Control (Live)", fontsize=14)
 
     _setup_scene_axes(config, ax_scene)
     (line_primary,) = ax_scene.plot([], [], "-o", lw=3, color=_color(primary.label), label=primary_label)
-    (line_fixed,) = ax_scene.plot([], [], "-o", lw=2, color=_color(fixed.label), label=_label(fixed.label))
-    (line_pd,) = ax_scene.plot([], [], "-o", lw=2, color=_color(pd.label), label=_label(pd.label))
     (trace_primary,) = ax_scene.plot([], [], lw=1.4, color=_color(primary.label), alpha=0.7)
-    (trace_fixed,) = ax_scene.plot([], [], lw=1.1, color=_color(fixed.label), alpha=0.55)
-    (trace_pd,) = ax_scene.plot([], [], lw=1.1, color=_color(pd.label), alpha=0.55)
     (target_dot,) = ax_scene.plot([], [], "o", ms=8, color=COLORS["target"], label="moving target")
     obstacle_patches = [
         Circle((0.0, 0.0), config.obstacles.radius, fc="#868E96", ec="#343A40", alpha=0.4)
@@ -209,8 +178,6 @@ def show_live_animation(
 
     lyapunov_series = {
         "adaptive": primary.tracking_lyapunov,
-        "fixed_lyapunov": fixed.tracking_lyapunov,
-        "plain_pd": pd.tracking_lyapunov,
     }
     normalized_lyapunov = {
         key: _normalize_positive(series) for key, series in lyapunov_series.items()
@@ -233,16 +200,9 @@ def show_live_animation(
 
     def update(frame_number: int):
         index = frame_number
-        for line, rollout in [
-            (line_primary, primary),
-            (line_fixed, fixed),
-            (line_pd, pd),
-        ]:
-            points = arm.forward_kinematics(rollout.q[index])
-            line.set_data(points[:, 0], points[:, 1])
+        points = arm.forward_kinematics(primary.q[index])
+        line_primary.set_data(points[:, 0], points[:, 1])
         trace_primary.set_data(primary.end_effector[: index + 1, 0], primary.end_effector[: index + 1, 1])
-        trace_fixed.set_data(fixed.end_effector[: index + 1, 0], fixed.end_effector[: index + 1, 1])
-        trace_pd.set_data(pd.end_effector[: index + 1, 0], pd.end_effector[: index + 1, 1])
         target_dot.set_data([primary.target[index, 0]], [primary.target[index, 1]])
         for patch, center in zip(obstacle_patches, primary.obstacle_centers[index], strict=True):
             patch.center = (center[0], center[1])
@@ -250,17 +210,11 @@ def show_live_animation(
         text.set_text(
             f"t = {primary.time[index]:.1f} s\n"
             f"{primary_label} V_e = {primary.tracking_lyapunov[index]:.3f}\n"
-            f"fixed V_e = {fixed.tracking_lyapunov[index]:.3f}\n"
-            f"PD V_e = {pd.tracking_lyapunov[index]:.3f}\n"
             f"clearance = {primary.clearance[index]:.1f} px"
         )
         return (
             line_primary,
-            line_fixed,
-            line_pd,
             trace_primary,
-            trace_fixed,
-            trace_pd,
             target_dot,
             time_marker,
             text,
@@ -290,14 +244,6 @@ def _save_workspace(
         lw=2,
         label=f"{_label(reference.label)} ee path",
     )
-    for key in ["fixed_lyapunov", "plain_pd"]:
-        ax.plot(
-            rollouts[key].end_effector[:, 0],
-            rollouts[key].end_effector[:, 1],
-            color=_color(rollouts[key].label),
-            lw=1.5,
-            label=f"{_label(rollouts[key].label)} ee path",
-        )
     for center in reference.obstacle_centers[0]:
         ax.add_patch(Circle(center, config.obstacles.radius, fc="#ADB5BD", ec="#495057", alpha=0.35))
     for rollout in rollouts.values():

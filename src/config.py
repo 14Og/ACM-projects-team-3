@@ -21,6 +21,7 @@ class RobotConfig:
 class DynamicsConfig:
     true_inertia: np.ndarray
     true_damping: np.ndarray
+    link_masses: np.ndarray
     torque_limits: np.ndarray
     disturbance_constant: np.ndarray
     disturbance_amplitude: np.ndarray
@@ -116,6 +117,7 @@ class ProjectConfig:
 
 def load_config(path: str | Path) -> ProjectConfig:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    n_joints = len(raw["robot"]["link_lengths"])
     planner_raw = dict(raw["planner"])
     planner_raw.setdefault("startup_ramp_time", 0.0)
     return ProjectConfig(
@@ -127,6 +129,7 @@ def load_config(path: str | Path) -> ProjectConfig:
         dynamics=DynamicsConfig(
             true_inertia=_array(raw["dynamics"]["true_inertia"]),
             true_damping=_array(raw["dynamics"]["true_damping"]),
+            link_masses=_array(raw["dynamics"].get("link_masses", [1.0] * n_joints)),
             torque_limits=_array(raw["dynamics"]["torque_limits"]),
             disturbance_constant=_array(
                 raw["dynamics"].get("disturbance_constant", [0.0, 0.0, 0.0])
