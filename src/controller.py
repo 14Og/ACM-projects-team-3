@@ -405,61 +405,6 @@ class BacksteppingSimplified:
         )
 
 
-    def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
-        q_error, dq_error, sliding, dq_r, ddq_r = _filtered_errors(
-            q,
-            dq,
-            ref,
-            self.cfg.lambda_gain,
-        )
-        inertia_hat = self.inertia_hat.copy()
-        damping_hat = self.damping_hat.copy()
-        bias_hat = self.bias_hat.copy()
-
-        # Robust control law: -K*s - rho*sat(s/epsilon)
-        sat_term = self.rho * self._sat(sliding / self.epsilon)
-        tau_raw = (
-            inertia_hat * ddq_r
-            + damping_hat * dq
-            - bias_hat
-            - self.K * sliding
-            - sat_term
-        )
-        tau = np.clip(tau_raw, -self.torque_limits, self.torque_limits)
-
-        # Adaptive laws (same as adaptive controller)
-        self.inertia_hat = np.clip(
-            inertia_hat + dt * (-self.cfg.gamma_inertia * sliding * ddq_r),
-            self.cfg.inertia_bounds[0],
-            self.cfg.inertia_bounds[1],
-        )
-        self.damping_hat = np.clip(
-            damping_hat + dt * (-self.cfg.gamma_damping * sliding * dq),
-            self.cfg.damping_bounds[0],
-            self.cfg.damping_bounds[1],
-        )
-        self.bias_hat = np.clip(
-            bias_hat + dt * (self.cfg.gamma_bias * sliding),
-            self.cfg.bias_bounds[0],
-            self.cfg.bias_bounds[1],
-        )
-
-        return ControlInfo(
-            tau_raw=tau_raw,
-            tau=tau,
-            q_error=q_error,
-            dq_error=dq_error,
-            sliding_error=sliding,
-            dq_r=dq_r,
-            ddq_r=ddq_r,
-            inertia_hat=inertia_hat,
-            damping_hat=damping_hat,
-            bias_hat=bias_hat,
-            mass_hat=np.full_like(q, np.nan, dtype=float),
-            saturated=bool(np.any(np.abs(tau_raw - tau) > 1e-9)),
-        )
-
-
 def _filtered_errors(
     q: np.ndarray,
     dq: np.ndarray,

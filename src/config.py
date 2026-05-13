@@ -87,6 +87,7 @@ class BacksteppingControllerConfig:
     k1: np.ndarray
     k2: np.ndarray
     assumed_link_masses: np.ndarray
+    lambda_gain: float
 
 
 @dataclass(frozen=True)
@@ -194,6 +195,9 @@ def load_config(path: str | Path) -> ProjectConfig:
                     raw["dynamics"].get("link_masses", [1.0] * n_joints),
                 )
             ),
+            lambda_gain=float(
+                raw.get("backstepping_controller", {}).get("lambda_gain", 1.0)
+            ),
         ),
         controller_selection=ControllerSelectionConfig(
             controller_type=str(raw.get("controller_selection", {}).get("controller_type", "all")),
@@ -286,6 +290,7 @@ def default_config() -> ProjectConfig:
             k1=np.array([10.0, 10.0, 10.0], dtype=float),
             k2=np.array([10.0, 10.0, 10.0], dtype=float),
             assumed_link_masses=link_masses.copy(),
+            lambda_gain=1.0
         ),
         controller_selection=ControllerSelectionConfig(
             controller_type=CONTROLLER_TYPE,
