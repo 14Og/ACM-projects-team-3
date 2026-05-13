@@ -90,14 +90,21 @@ class MovingObstacles:
 
 
 class JointSpacePlant:
-    """Simplified torque-level dynamics with unknown diagonal inertia and damping."""
+    """Full planar manipulator dynamics with unknown diagonal inertia and damping."""
 
-    def __init__(self, q0: np.ndarray, cfg: DynamicsConfig) -> None:
+    GRAVITY = 9.81
+
+    def __init__(self, q0: np.ndarray, cfg: DynamicsConfig, robot_cfg: RobotConfig) -> None:
         self.q = wrap_angles(np.asarray(q0, dtype=float))
         self.dq = np.zeros_like(self.q)
-        self.inertia = np.asarray(cfg.true_inertia, dtype=float)
-        self.damping = np.asarray(cfg.true_damping, dtype=float)
+        self.link_lengths = np.asarray(robot_cfg.link_lengths, dtype=float)
+        self.link_lengths_m = self.link_lengths / 200.0
+        self.masses = np.asarray(cfg.link_masses, dtype=float)
+        self.lc = self.link_lengths_m / 2.0
+        self.I = (1.0 / 12.0) * self.masses * (self.link_lengths_m ** 2)
+        self.n_joints = self.q.size
         self.torque_limits = np.asarray(cfg.torque_limits, dtype=float)
+        self.damping = np.asarray(cfg.true_damping, dtype=float)
         self.disturbance_constant = np.asarray(cfg.disturbance_constant, dtype=float)
         self.disturbance_amplitude = np.asarray(cfg.disturbance_amplitude, dtype=float)
         self.disturbance_frequency = np.asarray(cfg.disturbance_frequency, dtype=float)
@@ -107,27 +114,145 @@ class JointSpacePlant:
             self.disturbance_frequency * float(time)
         )
 
-    def acceleration(self, dq: np.ndarray, tau: np.ndarray, time: float) -> np.ndarray:
-        return (tau + self.disturbance(time) - self.damping * dq) / self.inertia
+    def acceleration(self, q: np.ndarray, dq: np.ndarray, tau: np.ndarray, time: float) -> np.ndarray:
+        q = np.asarray(q, dtype=float)
+        dq = np.asarray(dq, dtype=float)
+        tau = np.asarray(tau, dtype=float)
+        M, G = _dynamics_matrices(q, self.masses, self.link_lengths_m, self.lc, self.I, self.GRAVITY)
+        C = _coriolis_vector(q, dq, self.masses, self.link_lengths_m, self.lc)
+        damping = self.damping * dq
+        rhs = tau + self.disturbance(time) - G - C - damping
+        return np.linalg.solve(M, rhs)
 
     def step(self, tau: np.ndarray, dt: float, time: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Integrate with constant torque using RK4."""
+        """Integrate with constant torque using RK4 using smaller physics substeps."""
         tau = np.clip(np.asarray(tau, dtype=float), -self.torque_limits, self.torque_limits)
-        q0 = self.q.copy()
-        dq0 = self.dq.copy()
+        sub_dt = min(0.0005, dt)
+        steps = max(1, int(round(dt / sub_dt)))
+        sub_dt = dt / steps
 
-        def rhs(q: np.ndarray, dq: np.ndarray, stage_time: float) -> tuple[np.ndarray, np.ndarray]:
-            del q
-            return dq, self.acceleration(dq, tau, stage_time)
+        for step in range(steps):
+            q0 = self.q.copy()
+            dq0 = self.dq.copy()
 
-        k1_q, k1_dq = rhs(q0, dq0, time)
-        k2_q, k2_dq = rhs(q0 + 0.5 * dt * k1_q, dq0 + 0.5 * dt * k1_dq, time + 0.5 * dt)
-        k3_q, k3_dq = rhs(q0 + 0.5 * dt * k2_q, dq0 + 0.5 * dt * k2_dq, time + 0.5 * dt)
-        k4_q, k4_dq = rhs(q0 + dt * k3_q, dq0 + dt * k3_dq, time + dt)
+            def rhs(q: np.ndarray, dq: np.ndarray, stage_time: float) -> tuple[np.ndarray, np.ndarray]:
+                return dq, self.acceleration(q, dq, tau, time + step * sub_dt)
 
-        self.q = wrap_angles(q0 + (dt / 6.0) * (k1_q + 2.0 * k2_q + 2.0 * k3_q + k4_q))
-        self.dq = dq0 + (dt / 6.0) * (k1_dq + 2.0 * k2_dq + 2.0 * k3_dq + k4_dq)
+            k1_q, k1_dq = rhs(q0, dq0, time + step * sub_dt)
+            k2_q, k2_dq = rhs(
+                q0 + 0.5 * sub_dt * k1_q,
+                dq0 + 0.5 * sub_dt * k1_dq,
+                time + step * sub_dt + 0.5 * sub_dt,
+            )
+            k3_q, k3_dq = rhs(
+                q0 + 0.5 * sub_dt * k2_q,
+                dq0 + 0.5 * sub_dt * k2_dq,
+                time + step * sub_dt + 0.5 * sub_dt,
+            )
+            k4_q, k4_dq = rhs(
+                q0 + sub_dt * k3_q,
+                dq0 + sub_dt * k3_dq,
+                time + step * sub_dt + sub_dt,
+            )
+
+            self.q = wrap_angles(
+                q0 + (sub_dt / 6.0) * (k1_q + 2.0 * k2_q + 2.0 * k3_q + k4_q)
+            )
+            self.dq = np.clip(
+                dq0 + (sub_dt / 6.0) * (k1_dq + 2.0 * k2_dq + 2.0 * k3_dq + k4_dq),
+                -15.0,
+                15.0,
+            )
+
         return self.q.copy(), self.dq.copy(), tau, self.disturbance(time)
+
+
+def with_payload_error(cfg: DynamicsConfig, multiplier: float = 3.0) -> DynamicsConfig:
+    """Return a real-plant dynamics config with a heavier third link."""
+    masses = np.asarray(cfg.link_masses, dtype=float).copy()
+    masses[2] *= float(multiplier)
+    true_inertia = np.asarray(cfg.true_inertia, dtype=float).copy()
+    true_inertia[2] *= float(multiplier)
+    return DynamicsConfig(
+        true_inertia=true_inertia,
+        true_damping=cfg.true_damping.copy(),
+        link_masses=masses,
+        torque_limits=cfg.torque_limits.copy(),
+        disturbance_constant=cfg.disturbance_constant.copy(),
+        disturbance_amplitude=cfg.disturbance_amplitude.copy(),
+        disturbance_frequency=cfg.disturbance_frequency.copy(),
+    )
+
+
+def manipulator_terms(
+    q: np.ndarray,
+    dq: np.ndarray,
+    masses: np.ndarray,
+    link_lengths_px: np.ndarray,
+    gravity: float = JointSpacePlant.GRAVITY,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return M(q), C(q,dq)dq, and G(q) for the full planar dynamics."""
+    link_lengths_m = np.asarray(link_lengths_px, dtype=float) / 200.0
+    masses = np.asarray(masses, dtype=float)
+    lc = link_lengths_m / 2.0
+    inertia = (1.0 / 12.0) * masses * (link_lengths_m ** 2)
+    M, G = _dynamics_matrices(np.asarray(q, dtype=float), masses, link_lengths_m, lc, inertia, gravity)
+    c_times_dq = _coriolis_vector(np.asarray(q, dtype=float), np.asarray(dq, dtype=float), masses, link_lengths_m, lc)
+    return M, c_times_dq, G
+
+
+def _dynamics_matrices(q: np.ndarray, masses: np.ndarray, lengths: np.ndarray, lc: np.ndarray, I: np.ndarray, g: float) -> tuple[np.ndarray, np.ndarray]:
+    m1, m2, m3 = masses
+    l1, l2, l3 = lengths
+    lc1, lc2, lc3 = lc
+    I1, I2, I3 = I
+    th1, th2, th3 = q
+
+    c2 = np.cos(th2)
+    c3 = np.cos(th3)
+    c23 = np.cos(th2 + th3)
+
+    M = np.zeros((3, 3), dtype=float)
+    M[2, 2] = I3 + m3 * lc3**2
+    M[1, 2] = M[2, 2] + m3 * l2 * lc3 * c3
+    M[0, 2] = M[2, 2] + m3 * l2 * lc3 * c3 + m3 * l1 * lc3 * c23
+    M[2, 1] = M[1, 2]
+    M[1, 1] = I2 + m2 * lc2**2 + I3 + m3 * (l2**2 + lc3**2 + 2.0 * l2 * lc3 * c3)
+    M[0, 1] = M[1, 1] + (m2 * l1 * lc2 + m3 * l1 * l2) * c2 + m3 * l1 * lc3 * c23
+    M[2, 0] = M[0, 2]
+    M[1, 0] = M[0, 1]
+    M[0, 0] = (
+        I1
+        + m1 * lc1**2
+        + m2 * (l1**2 + lc2**2 + 2.0 * l1 * lc2 * c2)
+        + m3 * (l1**2 + l2**2 + lc3**2 + 2.0 * l1 * l2 * c2 + 2.0 * l2 * lc3 * c3 + 2.0 * l1 * lc3 * c23)
+    )
+
+    G = np.zeros(3, dtype=float)
+    G[2] = m3 * g * lc3 * np.cos(th1 + th2 + th3)
+    G[1] = (m2 * lc2 + m3 * l2) * g * np.cos(th1 + th2) + G[2]
+    G[0] = (m1 * lc1 + (m2 + m3) * l1) * g * np.cos(th1) + G[1]
+    return M, G
+
+
+def _coriolis_vector(q: np.ndarray, dq: np.ndarray, masses: np.ndarray, lengths: np.ndarray, lc: np.ndarray) -> np.ndarray:
+    _, m2, m3 = masses
+    l1, l2, _ = lengths
+    _, lc2, lc3 = lc
+    th2, th3 = q[1], q[2]
+    dq0, dq1, dq2 = dq[0], dq[1], dq[2]
+
+    f1 = (m2 * l1 * lc2 + m3 * l1 * l2) * np.sin(th2)
+    f2 = m3 * l1 * lc3 * np.sin(th2 + th3)
+    f3 = m3 * l2 * lc3 * np.sin(th3)
+
+    Cdq = np.zeros(3, dtype=float)
+    Cdq[0] = (-2.0 * (f1 + f2) * dq0 * dq1 - 2.0 * (f3 + f2) * dq0 * dq2
+              - (f1 + f2) * dq1 * dq1 - 2.0 * (f3 + f2) * dq1 * dq2
+              - (f3 + f2) * dq2 * dq2)
+    Cdq[1] = ((f1 + f2) * dq0 * dq0 - 2.0 * f3 * dq0 * dq2 - 2.0 * f3 * dq1 * dq2 - f3 * dq2 * dq2)
+    Cdq[2] = ((f3 + f2) * dq0 * dq0 + 2.0 * f3 * dq0 * dq1 + f3 * dq1 * dq1)
+    return Cdq
 
 
 def closest_point_on_segment(point: np.ndarray, start: np.ndarray, end: np.ndarray) -> np.ndarray:

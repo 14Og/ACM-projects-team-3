@@ -1,0 +1,47 @@
+{
+  "adaptive": {
+    "final_target_error_px": 159.12681350586394,
+    "mean_target_error_px": 162.3366625360539,
+    "tail_mean_target_error_px": 160.84413666280258,
+    "tail_max_target_error_px": 325.00456987329045,
+    "max_target_error_px": 325.00456987329045,
+    "tail_success_fraction": 0.03,
+    "min_clearance_px": 1000000.0,
+    "collision_count": 0.0,
+    "saturation_fraction": 0.9603960396039604,
+    "final_q_error_norm_rad": 2.5700855337810946,
+    "tail_mean_q_error_norm_rad": 2.754759964048213,
+    "final_sliding_norm": 15.774825086793486,
+    "tail_mean_sliding_norm": 16.625141583523565,
+    "max_sliding_norm": 25.250260756695504,
+    "rms_torque": 101.1237616516926,
+    "rms_external_torque": 34.65209444576742,
+    "max_external_torque": 44.466030832167995,
+    "tracking_lyapunov_initial": 0.0,
+    "tracking_lyapunov_final": 120.7306987066054,
+    "tracking_lyapunov_tail_mean": 131.11641079508692,
+    "augmented_lyapunov_initial": 384.24242424242425,
+    "augmented_lyapunov_final": 1943.2559587769522,
+    "augmented_lyapunov_drop_fraction": -4.057369608804371,
+    "augmented_lyapunov_positive_step_count": 49.0,
+    "augmented_lyapunov_max_positive_step": 1553.9128022276732,
+    "final_inertia_hat": [
+      28.41728414627532,
+      30.0,
+      30.0
+    ],
+    "final_damping_hat": [
+      0.4484080268275668,
+      0.0,
+      0.0
+    ],
+    "final_bias_hat": [
+      15.0,
+      -15.0,
+      9.256123857397393
+    ],
+    "final_inertia_error_norm": 33.66778592340517,
+    "final_damping_error_norm": 18.407933422849,
+    "final_bias_error_norm": 11.205059201786188
+  }
+}

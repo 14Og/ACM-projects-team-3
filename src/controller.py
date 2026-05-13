@@ -8,12 +8,12 @@ import numpy as np
 
 from .config import (
     AdaptiveControllerConfig,
-    FixedLyapunovControllerConfig,
-    PDControllerConfig,
+    BacksteppingControllerConfig,
     PlannerConfig,
+    RobotConfig,
     TargetConfig,
 )
-from .system import MovingObstacles, PlanarArm, angle_error, wrap_angles
+from .system import MovingObstacles, PlanarArm, angle_error, manipulator_terms, wrap_angles
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,7 @@ class ControlInfo:
     inertia_hat: np.ndarray
     damping_hat: np.ndarray
     bias_hat: np.ndarray
+    mass_hat: np.ndarray
     saturated: bool
 
 
@@ -196,11 +197,13 @@ class AdaptiveLyapunovController:
         self.inertia_hat = cfg.initial_inertia_hat.copy()
         self.damping_hat = cfg.initial_damping_hat.copy()
         self.bias_hat = cfg.initial_bias_hat.copy()
+        self.mass_hat = cfg.initial_mass_hat.copy()
 
     def reset(self) -> None:
         self.inertia_hat = self.cfg.initial_inertia_hat.copy()
         self.damping_hat = self.cfg.initial_damping_hat.copy()
         self.bias_hat = self.cfg.initial_bias_hat.copy()
+        self.mass_hat = self.cfg.initial_mass_hat.copy()
 
     def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
         q_error, dq_error, sliding, dq_r, ddq_r = _filtered_errors(
@@ -243,161 +246,162 @@ class AdaptiveLyapunovController:
             inertia_hat=inertia_hat,
             damping_hat=damping_hat,
             bias_hat=bias_hat,
+            mass_hat=np.full_like(q, np.nan, dtype=float),
             saturated=bool(np.any(np.abs(tau_raw - tau) > 1e-9)),
         )
 
 
-class FixedLyapunovController:
-    """Same filtered-error law as adaptive control, but with fixed wrong parameters."""
+AdaptiveController = AdaptiveLyapunovController
 
-    name = "fixed_lyapunov"
 
-    def __init__(self, cfg: FixedLyapunovControllerConfig, torque_limits: np.ndarray) -> None:
+class AdaptiveSimplifiedController:
+    """Adaptive backstepping with simplified model: diagonal inertia, C=0, G(q, m_hat)."""
+
+    name = "adaptive_simp"
+
+    def __init__(
+        self,
+        cfg: AdaptiveControllerConfig,
+        robot_cfg: RobotConfig,
+        torque_limits: np.ndarray,
+        backstepping_cfg: BacksteppingControllerConfig | None = None,
+    ) -> None:
         self.cfg = cfg
-        self.torque_limits = np.asarray(torque_limits, dtype=float)
-
-    def reset(self) -> None:
-        return None
-
-    def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
-        del dt
-        q_error, dq_error, sliding, dq_r, ddq_r = _filtered_errors(
-            q,
-            dq,
-            ref,
-            self.cfg.lambda_gain,
-        )
-        tau_raw = self.cfg.nominal_inertia * ddq_r + self.cfg.nominal_damping * dq
-        tau_raw = tau_raw - self.cfg.sliding_gain * sliding
-        tau = np.clip(tau_raw, -self.torque_limits, self.torque_limits)
-        return ControlInfo(
-            tau_raw=tau_raw,
-            tau=tau,
-            q_error=q_error,
-            dq_error=dq_error,
-            sliding_error=sliding,
-            dq_r=dq_r,
-            ddq_r=ddq_r,
-            inertia_hat=self.cfg.nominal_inertia.copy(),
-            damping_hat=self.cfg.nominal_damping.copy(),
-            bias_hat=np.zeros_like(q),
-            saturated=bool(np.any(np.abs(tau_raw - tau) > 1e-9)),
-        )
-
-
-class PlainPDController:
-    """Classical joint-space Lyapunov PD baseline."""
-
-    name = "plain_pd"
-
-    def __init__(self, cfg: PDControllerConfig, torque_limits: np.ndarray) -> None:
-        self.cfg = cfg
-        self.torque_limits = np.asarray(torque_limits, dtype=float)
-
-    def reset(self) -> None:
-        return None
-
-    def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
-        del dt
-        q_error = angle_error(q, ref.q)
-        dq_error = dq - ref.dq
-        tau_raw = -self.cfg.kp * q_error - self.cfg.kd * dq_error
-        tau = np.clip(tau_raw, -self.torque_limits, self.torque_limits)
-        return ControlInfo(
-            tau_raw=tau_raw,
-            tau=tau,
-            q_error=q_error,
-            dq_error=dq_error,
-            sliding_error=dq_error,
-            dq_r=ref.dq.copy(),
-            ddq_r=np.zeros_like(q),
-            inertia_hat=np.full_like(q, np.nan, dtype=float),
-            damping_hat=np.full_like(q, np.nan, dtype=float),
-            bias_hat=np.full_like(q, np.nan, dtype=float),
-            saturated=bool(np.any(np.abs(tau_raw - tau) > 1e-9)),
-        )
-
-
-class RobustAdaptiveController:
-    """Robust adaptive controller with sliding mode: tau = M*ddq_r + D*dq - b_hat - K*s - rho*sat(s/epsilon)"""
-
-    name = "robust"
-
-    def __init__(self, cfg: AdaptiveControllerConfig, torque_limits: np.ndarray) -> None:
-        self.cfg = cfg
+        self.link_lengths = np.asarray(robot_cfg.link_lengths, dtype=float)
         self.torque_limits = np.asarray(torque_limits, dtype=float)
         self.inertia_hat = cfg.initial_inertia_hat.copy()
         self.damping_hat = cfg.initial_damping_hat.copy()
-        self.bias_hat = cfg.initial_bias_hat.copy()
-        # Robust gains
-        self.K = np.array(cfg.sliding_gain) * 2.0  # Higher gain for robustness
-        self.rho = 5.0  # Robust boundary layer gain
-        self.epsilon = 0.5  # Sliding surface boundary layer width
+        self.mass_hat = cfg.initial_mass_hat.copy()
+        if backstepping_cfg is None:
+            self.k1 = np.eye(self.inertia_hat.size) * float(cfg.lambda_gain)
+            self.k2 = np.diag(np.asarray(cfg.sliding_gain, dtype=float))
+        else:
+            self.k1 = np.diag(np.asarray(backstepping_cfg.k1, dtype=float))
+            self.k2 = np.diag(np.asarray(backstepping_cfg.k2, dtype=float))
 
     def reset(self) -> None:
         self.inertia_hat = self.cfg.initial_inertia_hat.copy()
         self.damping_hat = self.cfg.initial_damping_hat.copy()
-        self.bias_hat = self.cfg.initial_bias_hat.copy()
-
-    def _sat(self, x: np.ndarray) -> np.ndarray:
-        """Saturation function for sliding mode."""
-        return np.where(
-            np.abs(x) > 1.0,
-            np.sign(x),
-            x,
-        )
+        self.mass_hat = self.cfg.initial_mass_hat.copy()
 
     def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
-        q_error, dq_error, sliding, dq_r, ddq_r = _filtered_errors(
-            q,
-            dq,
-            ref,
-            self.cfg.lambda_gain,
-        )
         inertia_hat = self.inertia_hat.copy()
         damping_hat = self.damping_hat.copy()
-        bias_hat = self.bias_hat.copy()
-
-        # Robust control law: -K*s - rho*sat(s/epsilon)
-        sat_term = self.rho * self._sat(sliding / self.epsilon)
-        tau_raw = (
-            inertia_hat * ddq_r
-            + damping_hat * dq
-            - bias_hat
-            - self.K * sliding
-            - sat_term
-        )
+        mass_hat = self.mass_hat.copy()
+        z1, z2, alpha_dot = _backstepping_errors(q, dq, ref, self.k1)
+        desired_accel = alpha_dot - z1 - self.k2 @ z2
+        M_hat_full, _, G_hat = manipulator_terms(q, dq, mass_hat, self.link_lengths)
+        M_hat_diag = np.diag(M_hat_full)
+        tau_raw = M_hat_diag * desired_accel + damping_hat * dq + G_hat
         tau = np.clip(tau_raw, -self.torque_limits, self.torque_limits)
 
-        # Adaptive laws (same as adaptive controller)
-        self.inertia_hat = np.clip(
-            inertia_hat + dt * (-self.cfg.gamma_inertia * sliding * ddq_r),
-            self.cfg.inertia_bounds[0],
-            self.cfg.inertia_bounds[1],
-        )
+        gravity_regressor = _gravity_mass_regressor(q, self.link_lengths)
+        self.inertia_hat = M_hat_diag.copy()
         self.damping_hat = np.clip(
-            damping_hat + dt * (-self.cfg.gamma_damping * sliding * dq),
+            damping_hat + dt * (-self.cfg.gamma_damping * z2 * dq),
             self.cfg.damping_bounds[0],
             self.cfg.damping_bounds[1],
         )
-        self.bias_hat = np.clip(
-            bias_hat + dt * (self.cfg.gamma_bias * sliding),
-            self.cfg.bias_bounds[0],
-            self.cfg.bias_bounds[1],
+        self.mass_hat = np.clip(
+            mass_hat + dt * (-self.cfg.gamma_mass * (gravity_regressor.T @ z2)),
+            self.cfg.mass_bounds[0],
+            self.cfg.mass_bounds[1],
         )
 
         return ControlInfo(
             tau_raw=tau_raw,
             tau=tau,
-            q_error=q_error,
-            dq_error=dq_error,
-            sliding_error=sliding,
-            dq_r=dq_r,
-            ddq_r=ddq_r,
-            inertia_hat=inertia_hat,
+            q_error=z1,
+            dq_error=dq - ref.dq,
+            sliding_error=z2,
+            dq_r=ref.dq.copy(),
+            ddq_r=ref.ddq.copy(),
+            inertia_hat=M_hat_diag,
             damping_hat=damping_hat,
-            bias_hat=bias_hat,
+            bias_hat=np.zeros_like(q),
+            mass_hat=mass_hat,
             saturated=bool(np.any(np.abs(tau_raw - tau) > 1e-9)),
+        )
+
+
+class BacksteppingFull:
+    """Backstepping controller using the controller's exact nominal M, C, G model."""
+
+    name = "backstepping_full"
+
+    def __init__(
+        self,
+        cfg: BacksteppingControllerConfig,
+        robot_cfg: RobotConfig,
+        torque_limits: np.ndarray,
+    ) -> None:
+        self.cfg = cfg
+        self.link_lengths = np.asarray(robot_cfg.link_lengths, dtype=float)
+        self.assumed_masses = np.asarray(cfg.assumed_link_masses, dtype=float)
+        self.torque_limits = np.asarray(torque_limits, dtype=float)
+        self.k1 = np.diag(np.asarray(cfg.k1, dtype=float))
+        self.k2 = np.diag(np.asarray(cfg.k2, dtype=float))
+
+    def reset(self) -> None:
+        return None
+
+    def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
+        del dt
+        z1, z2, alpha_dot = _backstepping_errors(q, dq, ref, self.k1)
+        M, c_times_dq, G = manipulator_terms(q, dq, self.assumed_masses, self.link_lengths)
+        tau_raw = M @ (alpha_dot - z1 - self.k2 @ z2) + c_times_dq + G
+        tau = np.clip(tau_raw, -self.torque_limits, self.torque_limits)
+        return _backstepping_info(
+            q=q,
+            dq=dq,
+            ref=ref,
+            z1=z1,
+            z2=z2,
+            tau_raw=tau_raw,
+            tau=tau,
+            inertia_hat=np.diag(M),
+            mass_hat=self.assumed_masses,
+        )
+
+
+class BacksteppingSimplified:
+    """Backstepping controller using diagonal inertia, C=0, and nominal G(q)."""
+
+    name = "backstepping_simp"
+
+    def __init__(
+        self,
+        cfg: BacksteppingControllerConfig,
+        robot_cfg: RobotConfig,
+        torque_limits: np.ndarray,
+    ) -> None:
+        self.cfg = cfg
+        self.link_lengths = np.asarray(robot_cfg.link_lengths, dtype=float)
+        self.assumed_masses = np.asarray(cfg.assumed_link_masses, dtype=float)
+        self.torque_limits = np.asarray(torque_limits, dtype=float)
+        self.k1 = np.diag(np.asarray(cfg.k1, dtype=float))
+        self.k2 = np.diag(np.asarray(cfg.k2, dtype=float))
+
+    def reset(self) -> None:
+        return None
+
+    def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
+        del dt
+        z1, z2, alpha_dot = _backstepping_errors(q, dq, ref, self.k1)
+        M_full, _, G = manipulator_terms(q, dq, self.assumed_masses, self.link_lengths)
+        M_diag = np.diag(np.diag(M_full))
+        tau_raw = M_diag @ (alpha_dot - z1 - self.k2 @ z2) + G
+        tau = np.clip(tau_raw, -self.torque_limits, self.torque_limits)
+        return _backstepping_info(
+            q=q,
+            dq=dq,
+            ref=ref,
+            z1=z1,
+            z2=z2,
+            tau_raw=tau_raw,
+            tau=tau,
+            inertia_hat=np.diag(M_diag),
+            mass_hat=self.assumed_masses,
         )
 
 
@@ -413,6 +417,60 @@ def _filtered_errors(
     dq_r = ref.dq - lambda_gain * q_error
     ddq_r = ref.ddq - lambda_gain * dq_error
     return q_error, dq_error, sliding, dq_r, ddq_r
+
+
+def _backstepping_errors(
+    q: np.ndarray,
+    dq: np.ndarray,
+    ref: ReferenceState,
+    k1: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    z1 = angle_error(q, ref.q)
+    alpha = ref.dq - k1 @ z1
+    z2 = dq - alpha
+    alpha_dot = ref.ddq - k1 @ (dq - ref.dq)
+    return z1, z2, alpha_dot
+
+
+def _backstepping_info(
+    *,
+    q: np.ndarray,
+    dq: np.ndarray,
+    ref: ReferenceState,
+    z1: np.ndarray,
+    z2: np.ndarray,
+    tau_raw: np.ndarray,
+    tau: np.ndarray,
+    inertia_hat: np.ndarray,
+    mass_hat: np.ndarray,
+) -> ControlInfo:
+    return ControlInfo(
+        tau_raw=tau_raw,
+        tau=tau,
+        q_error=z1,
+        dq_error=dq - ref.dq,
+        sliding_error=z2,
+        dq_r=ref.dq.copy(),
+        ddq_r=ref.ddq.copy(),
+        inertia_hat=inertia_hat.copy(),
+        damping_hat=np.full_like(q, np.nan, dtype=float),
+        bias_hat=np.full_like(q, np.nan, dtype=float),
+        mass_hat=mass_hat.copy(),
+        saturated=bool(np.any(np.abs(tau_raw - tau) > 1e-9)),
+    )
+
+
+def _gravity_mass_regressor(q: np.ndarray, link_lengths_px: np.ndarray) -> np.ndarray:
+    """Return Y_g(q) such that G(q, masses) = Y_g(q) @ masses."""
+    q = np.asarray(q, dtype=float)
+    link_lengths_px = np.asarray(link_lengths_px, dtype=float)
+    regressor = np.zeros((3, 3), dtype=float)
+    for index in range(3):
+        masses = np.zeros(3, dtype=float)
+        masses[index] = 1.0
+        _, _, gravity = manipulator_terms(q, np.zeros(3, dtype=float), masses, link_lengths_px)
+        regressor[:, index] = gravity
+    return regressor
 
 
 def _limit_norm(vector: np.ndarray, max_norm: float) -> np.ndarray:

@@ -9,7 +9,7 @@ from typing import Protocol
 
 import numpy as np
 
-from .config import ProjectConfig
+from .config import DynamicsConfig, ProjectConfig
 from .controller import ObstacleAwareReferenceGenerator
 from .system import JointSpacePlant, MovingObstacles, PlanarArm
 
@@ -40,6 +40,7 @@ class Rollout:
     inertia_hat: np.ndarray
     damping_hat: np.ndarray
     bias_hat: np.ndarray
+    mass_hat: np.ndarray
     end_effector: np.ndarray
     target: np.ndarray
     obstacle_centers: np.ndarray
@@ -54,7 +55,12 @@ class Rollout:
     saturated: np.ndarray
 
 
-def run_rollout(config: ProjectConfig, controller: Controller) -> Rollout:
+def run_rollout(
+    config: ProjectConfig,
+    controller: Controller,
+    real_dynamics: DynamicsConfig | None = None,
+) -> Rollout:
+    real_dynamics = real_dynamics or config.dynamics
     arm = PlanarArm(config.robot)
     obstacles = MovingObstacles(config.obstacles)
     planner = ObstacleAwareReferenceGenerator(
@@ -65,7 +71,7 @@ def run_rollout(config: ProjectConfig, controller: Controller) -> Rollout:
         q0=config.robot.initial_angles,
         obstacle_radius=config.obstacles.radius,
     )
-    plant = JointSpacePlant(config.robot.initial_angles, config.dynamics)
+    plant = JointSpacePlant(config.robot.initial_angles, real_dynamics, config.robot)
     controller.reset()
 
     dt = config.simulation.dt
@@ -86,6 +92,7 @@ def run_rollout(config: ProjectConfig, controller: Controller) -> Rollout:
     inertia_hat = np.zeros((n_steps, n_joints))
     damping_hat = np.zeros((n_steps, n_joints))
     bias_hat = np.zeros((n_steps, n_joints))
+    mass_hat = np.zeros((n_steps, n_joints))
     end_effector = np.zeros((n_steps, 2))
     target = np.zeros((n_steps, 2))
     obstacle_centers = np.zeros((n_steps, n_obstacles, 2))
@@ -123,6 +130,7 @@ def run_rollout(config: ProjectConfig, controller: Controller) -> Rollout:
         inertia_hat[index] = info.inertia_hat
         damping_hat[index] = info.damping_hat
         bias_hat[index] = info.bias_hat
+        mass_hat[index] = info.mass_hat
         end_effector[index] = ee
         target[index] = ref.target
         obstacle_centers[index] = centers
@@ -130,9 +138,9 @@ def run_rollout(config: ProjectConfig, controller: Controller) -> Rollout:
         q_error_norm[index] = float(np.linalg.norm(info.q_error))
         sliding_norm[index] = float(np.linalg.norm(info.sliding_error))
         tracking_lyapunov[index] = 0.5 * float(
-            np.dot(info.q_error, info.q_error) + np.dot(info.dq_error, info.dq_error)
+            np.dot(info.q_error, info.q_error) + np.dot(info.sliding_error, info.sliding_error)
         )
-        augmented_lyapunov[index] = _augmented_lyapunov(config, controller.name, info)
+        augmented_lyapunov[index] = _augmented_lyapunov(config, real_dynamics, controller.name, info)
         clearance[index] = clearance_result.min_clearance
         reference_clearance[index] = ref.reference_clearance
         collision[index] = clearance_result.collision
@@ -156,6 +164,7 @@ def run_rollout(config: ProjectConfig, controller: Controller) -> Rollout:
         inertia_hat=inertia_hat,
         damping_hat=damping_hat,
         bias_hat=bias_hat,
+        mass_hat=mass_hat,
         end_effector=end_effector,
         target=target,
         obstacle_centers=obstacle_centers,
@@ -171,7 +180,12 @@ def run_rollout(config: ProjectConfig, controller: Controller) -> Rollout:
     )
 
 
-def summarize_rollout(config: ProjectConfig, rollout: Rollout) -> dict[str, object]:
+def summarize_rollout(
+    config: ProjectConfig,
+    rollout: Rollout,
+    real_dynamics: DynamicsConfig | None = None,
+) -> dict[str, object]:
+    real_dynamics = real_dynamics or config.dynamics
     tail = max(1, int(round(config.simulation.tail_window_seconds / config.simulation.dt)))
     tail_error = rollout.target_error[-tail:]
     tail_sliding = rollout.sliding_norm[-tail:]
@@ -220,12 +234,14 @@ def summarize_rollout(config: ProjectConfig, rollout: Rollout) -> dict[str, obje
         "final_inertia_hat": _finite_list_or_none(rollout.inertia_hat[-1]),
         "final_damping_hat": _finite_list_or_none(rollout.damping_hat[-1]),
         "final_bias_hat": _finite_list_or_none(rollout.bias_hat[-1]),
-        "final_inertia_error_norm": _parameter_error_norm(rollout.inertia_hat[-1], config.dynamics.true_inertia),
-        "final_damping_error_norm": _parameter_error_norm(rollout.damping_hat[-1], config.dynamics.true_damping),
+        "final_mass_hat": _finite_list_or_none(rollout.mass_hat[-1]),
+        "final_inertia_error_norm": _parameter_error_norm(rollout.inertia_hat[-1], real_dynamics.true_inertia),
+        "final_damping_error_norm": _parameter_error_norm(rollout.damping_hat[-1], real_dynamics.true_damping),
         "final_bias_error_norm": _parameter_error_norm(
             rollout.bias_hat[-1],
-            config.dynamics.disturbance_constant,
+            real_dynamics.disturbance_constant,
         ),
+        "final_mass_error_norm": _parameter_error_norm(rollout.mass_hat[-1], real_dynamics.link_masses),
     }
 
 
@@ -247,6 +263,7 @@ def save_rollout_data_csv(rollouts: dict[str, Rollout], path: str | Path) -> Pat
         *(f"inertia_hat{j + 1}" for j in range(n_joints)),
         *(f"damping_hat{j + 1}" for j in range(n_joints)),
         *(f"bias_hat{j + 1}" for j in range(n_joints)),
+        *(f"mass_hat{j + 1}" for j in range(n_joints)),
         *(f"disturbance{j + 1}" for j in range(n_joints)),
     ]
     fieldnames = [
@@ -300,22 +317,28 @@ def save_rollout_data_csv(rollouts: dict[str, Rollout], path: str | Path) -> Pat
                 row.update(_joint_row("inertia_hat", rollout.inertia_hat[index]))
                 row.update(_joint_row("damping_hat", rollout.damping_hat[index]))
                 row.update(_joint_row("bias_hat", rollout.bias_hat[index]))
+                row.update(_joint_row("mass_hat", rollout.mass_hat[index]))
                 row.update(_joint_row("disturbance", rollout.disturbance_torque[index]))
                 writer.writerow(row)
     return output_path
 
 
-def _augmented_lyapunov(config: ProjectConfig, name: str, info) -> float:
-    if name not in {"adaptive", "robust"}:
+def _augmented_lyapunov(config: ProjectConfig, real_dynamics: DynamicsConfig, name: str, info) -> float:
+    if name not in {"adaptive", "adaptive_simp"}:
         return float("nan")
-    inertia_error = info.inertia_hat - config.dynamics.true_inertia
-    damping_error = info.damping_hat - config.dynamics.true_damping
-    bias_error = info.bias_hat - config.dynamics.disturbance_constant
+    inertia_error = info.inertia_hat - real_dynamics.true_inertia
+    damping_error = info.damping_hat - real_dynamics.true_damping
+    bias_error = info.bias_hat - real_dynamics.disturbance_constant
+    mass_error = info.mass_hat - real_dynamics.link_masses
+    mass_term = 0.0
+    if np.all(np.isfinite(mass_error)):
+        mass_term = 0.5 * float(np.sum(mass_error * mass_error / config.adaptive_controller.gamma_mass))
     return (
-        0.5 * float(np.sum(config.dynamics.true_inertia * info.sliding_error * info.sliding_error))
+        0.5 * float(np.sum(real_dynamics.true_inertia * info.sliding_error * info.sliding_error))
         + 0.5 * float(np.sum(inertia_error * inertia_error / config.adaptive_controller.gamma_inertia))
         + 0.5 * float(np.sum(damping_error * damping_error / config.adaptive_controller.gamma_damping))
         + 0.5 * float(np.sum(bias_error * bias_error / config.adaptive_controller.gamma_bias))
+        + mass_term
     )
 
 

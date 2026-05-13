@@ -9,18 +9,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Circle
 
-from .config import ProjectConfig
+from .config import DynamicsConfig, ProjectConfig
 from .simulation import Rollout
 from .system import PlanarArm
 
 
 COLORS = {
     "adaptive": "#087F5B",
-    "fixed_lyapunov": "#C92A2A",
-    "plain_pd": "#5F3DC4",
     "reference": "#1C7ED6",
     "target": "#F08C00",
-    "robust": "#E67700",
+    "backstepping_full": "#1864AB",
+    "backstepping_simp": "#9C36B5",
+    "adaptive_simp": "#2F9E44",
 }
 
 LABELS = {
@@ -28,6 +28,9 @@ LABELS = {
     "fixed_lyapunov": "fixed Lyapunov",
     "plain_pd": "plain PD",
     "robust": "robust",
+    "backstepping_full": "backstepping full",
+    "backstepping_simp": "backstepping simplified",
+    "adaptive_simp": "adaptive simplified",
 }
 
 
@@ -45,15 +48,21 @@ def save_all_plots(
     arm: PlanarArm,
     rollouts: dict[str, Rollout],
     figures_dir: Path,
+    real_dynamics: DynamicsConfig | None = None,
 ) -> list[Path]:
+    real_dynamics = real_dynamics or config.dynamics
     figures_dir.mkdir(parents=True, exist_ok=True)
-    return [
+    paths = [
         _save_workspace(config, arm, rollouts, figures_dir),
         _save_errors(config, rollouts, figures_dir),
+        _save_joint_errors(config, rollouts, figures_dir),
         _save_lyapunov_values(rollouts, figures_dir),
-        _save_parameters(config, rollouts["adaptive"], figures_dir),
         _save_control_clearance(config, rollouts, figures_dir),
     ]
+    for label, rollout in rollouts.items():
+        if label.startswith("adaptive"):
+            paths.append(_save_parameters(config, rollout, figures_dir, real_dynamics))
+    return paths
 
 
 def save_animation(
@@ -65,14 +74,54 @@ def save_animation(
     frame_stride: int = 15,
     fps: int = 30,
 ) -> Path:
+    primary = next(iter(rollouts.values()))
+    return _save_single_animation(
+        config=config,
+        arm=arm,
+        rollout=primary,
+        animations_dir=animations_dir,
+        frame_stride=frame_stride,
+        fps=fps,
+    )
+
+
+def save_all_animations(
+    *,
+    config: ProjectConfig,
+    arm: PlanarArm,
+    rollouts: dict[str, Rollout],
+    animations_dir: Path,
+    frame_stride: int = 15,
+    fps: int = 30,
+) -> list[Path]:
     animations_dir.mkdir(parents=True, exist_ok=True)
-    path = animations_dir / "adaptive_manipulator.gif"
-    primary = rollouts["adaptive"]
-    fixed = rollouts["fixed_lyapunov"]
-    pd = rollouts["plain_pd"]
-    frames = np.arange(0, primary.time.size, frame_stride, dtype=int)
-    if frames[-1] != primary.time.size - 1:
-        frames = np.append(frames, primary.time.size - 1)
+    return [
+        _save_single_animation(
+            config=config,
+            arm=arm,
+            rollout=rollout,
+            animations_dir=animations_dir,
+            frame_stride=frame_stride,
+            fps=fps,
+        )
+        for rollout in rollouts.values()
+    ]
+
+
+def _save_single_animation(
+    *,
+    config: ProjectConfig,
+    arm: PlanarArm,
+    rollout: Rollout,
+    animations_dir: Path,
+    frame_stride: int,
+    fps: int,
+) -> Path:
+    animations_dir.mkdir(parents=True, exist_ok=True)
+    path = animations_dir / f"{rollout.label}.gif"
+    frames = np.arange(0, rollout.time.size, frame_stride, dtype=int)
+    if frames[-1] != rollout.time.size - 1:
+        frames = np.append(frames, rollout.time.size - 1)
 
     fig, (ax_scene, ax_lyapunov) = plt.subplots(
         1,
@@ -80,16 +129,12 @@ def save_animation(
         figsize=(13, 6),
         gridspec_kw={"width_ratios": [1.15, 1.0]},
     )
-    primary_label = _label(primary.label)
-    fig.suptitle(f"3-DOF Manipulator: {primary_label} Control vs Lyapunov Baselines", fontsize=14)
+    primary_label = _label(rollout.label)
+    fig.suptitle(f"3-DOF Manipulator: {primary_label} Control", fontsize=14)
 
     _setup_scene_axes(config, ax_scene)
-    (line_primary,) = ax_scene.plot([], [], "-o", lw=3, color=_color(primary.label), label=primary_label)
-    (line_fixed,) = ax_scene.plot([], [], "-o", lw=2, color=_color(fixed.label), label=_label(fixed.label))
-    (line_pd,) = ax_scene.plot([], [], "-o", lw=2, color=_color(pd.label), label=_label(pd.label))
-    (trace_primary,) = ax_scene.plot([], [], lw=1.4, color=_color(primary.label), alpha=0.7)
-    (trace_fixed,) = ax_scene.plot([], [], lw=1.1, color=_color(fixed.label), alpha=0.55)
-    (trace_pd,) = ax_scene.plot([], [], lw=1.1, color=_color(pd.label), alpha=0.55)
+    (line_primary,) = ax_scene.plot([], [], "-o", lw=3, color=_color(rollout.label), label=primary_label)
+    (trace_primary,) = ax_scene.plot([], [], lw=1.4, color=_color(rollout.label), alpha=0.7)
     (target_dot,) = ax_scene.plot([], [], "o", ms=8, color=COLORS["target"], label="moving target")
     obstacle_patches = [
         Circle((0.0, 0.0), config.obstacles.radius, fc="#868E96", ec="#343A40", alpha=0.4)
@@ -101,23 +146,21 @@ def save_animation(
     ax_scene.legend(loc="lower left", fontsize=9)
 
     lyapunov_series = {
-        "adaptive": primary.tracking_lyapunov,
-        "fixed_lyapunov": fixed.tracking_lyapunov,
-        "plain_pd": pd.tracking_lyapunov,
+        rollout.label: rollout.tracking_lyapunov,
     }
     normalized_lyapunov = {
         key: _normalize_positive(series) for key, series in lyapunov_series.items()
     }
     for key, series in normalized_lyapunov.items():
         ax_lyapunov.plot(
-            rollouts[key].time,
+            rollout.time,
             series,
-            color=_color(rollouts[key].label),
+            color=_color(rollout.label),
             lw=1.4,
-            label=f"{_label(rollouts[key].label)} V_e / V_e(0)",
+            label=f"{_label(rollout.label)} V_e / V_e(0)",
         )
     time_marker = ax_lyapunov.axvline(0.0, color="black", lw=1.0, alpha=0.7)
-    ax_lyapunov.set_title("Comparable Tracking Lyapunov Values")
+    ax_lyapunov.set_title("Controller Tracking Lyapunov/Energy")
     ax_lyapunov.set_xlabel("time [s]")
     ax_lyapunov.set_ylabel("normalized value")
     ax_lyapunov.set_ylim(0.0, 1.08 * max(float(np.max(v)) for v in normalized_lyapunov.values()))
@@ -126,34 +169,21 @@ def save_animation(
 
     def update(frame_number: int):
         index = int(frames[frame_number])
-        for line, rollout in [
-            (line_primary, primary),
-            (line_fixed, fixed),
-            (line_pd, pd),
-        ]:
-            points = arm.forward_kinematics(rollout.q[index])
-            line.set_data(points[:, 0], points[:, 1])
-        trace_primary.set_data(primary.end_effector[: index + 1, 0], primary.end_effector[: index + 1, 1])
-        trace_fixed.set_data(fixed.end_effector[: index + 1, 0], fixed.end_effector[: index + 1, 1])
-        trace_pd.set_data(pd.end_effector[: index + 1, 0], pd.end_effector[: index + 1, 1])
-        target_dot.set_data([primary.target[index, 0]], [primary.target[index, 1]])
-        for patch, center in zip(obstacle_patches, primary.obstacle_centers[index], strict=True):
+        points = arm.forward_kinematics(rollout.q[index])
+        line_primary.set_data(points[:, 0], points[:, 1])
+        trace_primary.set_data(rollout.end_effector[: index + 1, 0], rollout.end_effector[: index + 1, 1])
+        target_dot.set_data([rollout.target[index, 0]], [rollout.target[index, 1]])
+        for patch, center in zip(obstacle_patches, rollout.obstacle_centers[index], strict=True):
             patch.center = (center[0], center[1])
-        time_marker.set_xdata([primary.time[index], primary.time[index]])
+        time_marker.set_xdata([rollout.time[index], rollout.time[index]])
         text.set_text(
-            f"t = {primary.time[index]:.1f} s\n"
-            f"{primary_label} V_e = {primary.tracking_lyapunov[index]:.3f}\n"
-            f"fixed V_e = {fixed.tracking_lyapunov[index]:.3f}\n"
-            f"PD V_e = {pd.tracking_lyapunov[index]:.3f}\n"
-            f"clearance = {primary.clearance[index]:.1f} px"
+            f"t = {rollout.time[index]:.1f} s\n"
+            f"{primary_label} V_e = {rollout.tracking_lyapunov[index]:.3f}\n"
+            f"clearance = {rollout.clearance[index]:.1f} px"
         )
         return (
             line_primary,
-            line_fixed,
-            line_pd,
             trace_primary,
-            trace_fixed,
-            trace_pd,
             target_dot,
             time_marker,
             text,
@@ -174,13 +204,7 @@ def show_live_animation(
     fps: int = 30,
 ) -> None:
     """Display real-time animation of the manipulator during simulation."""
-    import matplotlib
-    matplotlib.use("TkAgg")  # Use interactive backend
-
-    primary = rollouts["adaptive"]
-    fixed = rollouts["fixed_lyapunov"]
-    pd = rollouts["plain_pd"]
-
+    primary = next(iter(rollouts.values()))
     fig, (ax_scene, ax_lyapunov) = plt.subplots(
         1,
         2,
@@ -188,15 +212,11 @@ def show_live_animation(
         gridspec_kw={"width_ratios": [1.15, 1.0]},
     )
     primary_label = _label(primary.label)
-    fig.suptitle(f"3-DOF Manipulator: {primary_label} Control vs Lyapunov Baselines (Live)", fontsize=14)
+    fig.suptitle(f"3-DOF Manipulator: {primary_label} Control (Live)", fontsize=14)
 
     _setup_scene_axes(config, ax_scene)
     (line_primary,) = ax_scene.plot([], [], "-o", lw=3, color=_color(primary.label), label=primary_label)
-    (line_fixed,) = ax_scene.plot([], [], "-o", lw=2, color=_color(fixed.label), label=_label(fixed.label))
-    (line_pd,) = ax_scene.plot([], [], "-o", lw=2, color=_color(pd.label), label=_label(pd.label))
     (trace_primary,) = ax_scene.plot([], [], lw=1.4, color=_color(primary.label), alpha=0.7)
-    (trace_fixed,) = ax_scene.plot([], [], lw=1.1, color=_color(fixed.label), alpha=0.55)
-    (trace_pd,) = ax_scene.plot([], [], lw=1.1, color=_color(pd.label), alpha=0.55)
     (target_dot,) = ax_scene.plot([], [], "o", ms=8, color=COLORS["target"], label="moving target")
     obstacle_patches = [
         Circle((0.0, 0.0), config.obstacles.radius, fc="#868E96", ec="#343A40", alpha=0.4)
@@ -208,23 +228,21 @@ def show_live_animation(
     ax_scene.legend(loc="lower left", fontsize=9)
 
     lyapunov_series = {
-        "adaptive": primary.tracking_lyapunov,
-        "fixed_lyapunov": fixed.tracking_lyapunov,
-        "plain_pd": pd.tracking_lyapunov,
+        primary.label: primary.tracking_lyapunov,
     }
     normalized_lyapunov = {
         key: _normalize_positive(series) for key, series in lyapunov_series.items()
     }
     for key, series in normalized_lyapunov.items():
         ax_lyapunov.plot(
-            rollouts[key].time,
+            primary.time,
             series,
             color=_color(rollouts[key].label),
             lw=1.4,
             label=f"{_label(rollouts[key].label)} V_e / V_e(0)",
         )
     time_marker = ax_lyapunov.axvline(0.0, color="black", lw=1.0, alpha=0.7)
-    ax_lyapunov.set_title("Comparable Tracking Lyapunov Values")
+    ax_lyapunov.set_title("Controller Tracking Lyapunov/Energy")
     ax_lyapunov.set_xlabel("time [s]")
     ax_lyapunov.set_ylabel("normalized value")
     ax_lyapunov.set_ylim(0.0, 1.08 * max(float(np.max(v)) for v in normalized_lyapunov.values()))
@@ -233,16 +251,9 @@ def show_live_animation(
 
     def update(frame_number: int):
         index = frame_number
-        for line, rollout in [
-            (line_primary, primary),
-            (line_fixed, fixed),
-            (line_pd, pd),
-        ]:
-            points = arm.forward_kinematics(rollout.q[index])
-            line.set_data(points[:, 0], points[:, 1])
+        points = arm.forward_kinematics(primary.q[index])
+        line_primary.set_data(points[:, 0], points[:, 1])
         trace_primary.set_data(primary.end_effector[: index + 1, 0], primary.end_effector[: index + 1, 1])
-        trace_fixed.set_data(fixed.end_effector[: index + 1, 0], fixed.end_effector[: index + 1, 1])
-        trace_pd.set_data(pd.end_effector[: index + 1, 0], pd.end_effector[: index + 1, 1])
         target_dot.set_data([primary.target[index, 0]], [primary.target[index, 1]])
         for patch, center in zip(obstacle_patches, primary.obstacle_centers[index], strict=True):
             patch.center = (center[0], center[1])
@@ -250,17 +261,11 @@ def show_live_animation(
         text.set_text(
             f"t = {primary.time[index]:.1f} s\n"
             f"{primary_label} V_e = {primary.tracking_lyapunov[index]:.3f}\n"
-            f"fixed V_e = {fixed.tracking_lyapunov[index]:.3f}\n"
-            f"PD V_e = {pd.tracking_lyapunov[index]:.3f}\n"
             f"clearance = {primary.clearance[index]:.1f} px"
         )
         return (
             line_primary,
-            line_fixed,
-            line_pd,
             trace_primary,
-            trace_fixed,
-            trace_pd,
             target_dot,
             time_marker,
             text,
@@ -281,7 +286,7 @@ def _save_workspace(
     path = figures_dir / "workspace_trajectories.png"
     fig, ax = plt.subplots(figsize=(9, 8))
     _setup_scene_axes(config, ax)
-    reference = rollouts["adaptive"]
+    reference = next(iter(rollouts.values()))
     ax.plot(reference.target[:, 0], reference.target[:, 1], color=COLORS["target"], lw=2, label="target path")
     ax.plot(
         reference.end_effector[:, 0],
@@ -290,14 +295,6 @@ def _save_workspace(
         lw=2,
         label=f"{_label(reference.label)} ee path",
     )
-    for key in ["fixed_lyapunov", "plain_pd"]:
-        ax.plot(
-            rollouts[key].end_effector[:, 0],
-            rollouts[key].end_effector[:, 1],
-            color=_color(rollouts[key].label),
-            lw=1.5,
-            label=f"{_label(rollouts[key].label)} ee path",
-        )
     for center in reference.obstacle_centers[0]:
         ax.add_patch(Circle(center, config.obstacles.radius, fc="#ADB5BD", ec="#495057", alpha=0.35))
     for rollout in rollouts.values():
@@ -349,9 +346,32 @@ def _save_errors(config: ProjectConfig, rollouts: dict[str, Rollout], figures_di
     return path
 
 
+def _save_joint_errors(config: ProjectConfig, rollouts: dict[str, Rollout], figures_dir: Path) -> Path:
+    path = figures_dir / "joint_tracking_errors_z1.png"
+    n_joints = int(config.robot.link_lengths.size)
+    fig, axes = plt.subplots(n_joints, 1, figsize=(10, 8), sharex=True)
+    if n_joints == 1:
+        axes = [axes]
+    for joint, ax in enumerate(axes):
+        for rollout in rollouts.values():
+            z1 = rollout.q[:, joint] - rollout.q_des[:, joint]
+            z1 = (z1 + np.pi) % (2.0 * np.pi) - np.pi
+            ax.plot(rollout.time, z1, color=_color(rollout.label), label=_label(rollout.label))
+        ax.axhline(0.0, color="black", lw=0.8, ls="--")
+        ax.set_ylabel(f"z1_{joint + 1} [rad]")
+        ax.grid(alpha=0.28)
+        ax.legend(fontsize=8)
+    axes[0].set_title("Joint Tracking Error z1 = q - q_d")
+    axes[-1].set_xlabel("time [s]")
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    return path
+
+
 def _save_lyapunov_values(rollouts: dict[str, Rollout], figures_dir: Path) -> Path:
     path = figures_dir / "lyapunov_values.png"
-    primary = rollouts["adaptive"]
+    primary = next(iter(rollouts.values()))
     primary_label = _label(primary.label)
     augmented = primary.augmented_lyapunov
     positive_augmented = np.maximum(augmented, 1e-12)
@@ -388,7 +408,7 @@ def _save_lyapunov_values(rollouts: dict[str, Rollout], figures_dir: Path) -> Pa
         )
     axes[1].set_title("Tracking Lyapunov Candidate Across Controllers")
     axes[1].set_xlabel("time [s]")
-    axes[1].set_ylabel("V_e = 0.5(||e||^2 + ||de||^2)")
+    axes[1].set_ylabel("V_e = 0.5(||z1||^2 + ||z2/s||^2)")
     axes[1].grid(alpha=0.28)
     axes[1].legend()
 
@@ -398,16 +418,26 @@ def _save_lyapunov_values(rollouts: dict[str, Rollout], figures_dir: Path) -> Pa
     return path
 
 
-def _save_parameters(config: ProjectConfig, adaptive: Rollout, figures_dir: Path) -> Path:
-    path = figures_dir / "adaptive_parameter_estimates.png"
-    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+def _save_parameters(
+    config: ProjectConfig,
+    adaptive: Rollout,
+    figures_dir: Path,
+    real_dynamics: DynamicsConfig,
+) -> Path:
+    path = figures_dir / f"{adaptive.label}_parameter_estimates.png"
+    has_mass = np.all(np.isfinite(adaptive.mass_hat))
+    n_rows = 4 if has_mass else 3
+    fig, axes = plt.subplots(n_rows, 1, figsize=(10, 12 if has_mass else 10), sharex=True)
     for joint in range(config.robot.link_lengths.size):
         axes[0].plot(adaptive.time, adaptive.inertia_hat[:, joint], label=f"I_hat_{joint + 1}")
-        axes[0].axhline(config.dynamics.true_inertia[joint], lw=1.0, ls="--", alpha=0.7)
+        axes[0].axhline(real_dynamics.true_inertia[joint], lw=1.0, ls="--", alpha=0.7)
         axes[1].plot(adaptive.time, adaptive.damping_hat[:, joint], label=f"D_hat_{joint + 1}")
-        axes[1].axhline(config.dynamics.true_damping[joint], lw=1.0, ls="--", alpha=0.7)
+        axes[1].axhline(real_dynamics.true_damping[joint], lw=1.0, ls="--", alpha=0.7)
         axes[2].plot(adaptive.time, adaptive.bias_hat[:, joint], label=f"b_hat_{joint + 1}")
-        axes[2].axhline(config.dynamics.disturbance_constant[joint], lw=1.0, ls="--", alpha=0.7)
+        axes[2].axhline(real_dynamics.disturbance_constant[joint], lw=1.0, ls="--", alpha=0.7)
+        if has_mass:
+            axes[3].plot(adaptive.time, adaptive.mass_hat[:, joint], label=f"m_hat_{joint + 1}")
+            axes[3].axhline(real_dynamics.link_masses[joint], lw=1.0, ls="--", alpha=0.7)
     controller_label = _label(adaptive.label).title()
     axes[0].set_title(f"{controller_label} Inertia Estimates")
     axes[0].set_ylabel("inertia")
@@ -415,7 +445,12 @@ def _save_parameters(config: ProjectConfig, adaptive: Rollout, figures_dir: Path
     axes[1].set_ylabel("damping")
     axes[2].set_title(f"{controller_label} Constant Bias Estimates")
     axes[2].set_ylabel("bias torque")
-    axes[2].set_xlabel("time [s]")
+    if has_mass:
+        axes[3].set_title(f"{controller_label} Link Mass Estimates")
+        axes[3].set_ylabel("mass")
+        axes[3].set_xlabel("time [s]")
+    else:
+        axes[2].set_xlabel("time [s]")
     for ax in axes:
         ax.grid(alpha=0.28)
         ax.legend(ncol=3, fontsize=9)
@@ -432,7 +467,7 @@ def _save_control_clearance(
 ) -> Path:
     path = figures_dir / "control_and_clearance.png"
     fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
-    primary = rollouts["adaptive"]
+    primary = next(iter(rollouts.values()))
     for joint in range(config.robot.link_lengths.size):
         axes[0].plot(primary.time, primary.tau[:, joint], label=f"tau_{joint + 1}")
         axes[0].axhline(config.dynamics.torque_limits[joint], color="black", ls="--", lw=0.7, alpha=0.45)
