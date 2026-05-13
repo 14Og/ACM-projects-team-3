@@ -167,6 +167,40 @@ class JointSpacePlant:
         return self.q.copy(), self.dq.copy(), tau, self.disturbance(time)
 
 
+def with_payload_error(cfg: DynamicsConfig, multiplier: float = 3.0) -> DynamicsConfig:
+    """Return a real-plant dynamics config with a heavier third link."""
+    masses = np.asarray(cfg.link_masses, dtype=float).copy()
+    masses[2] *= float(multiplier)
+    true_inertia = np.asarray(cfg.true_inertia, dtype=float).copy()
+    true_inertia[2] *= float(multiplier)
+    return DynamicsConfig(
+        true_inertia=true_inertia,
+        true_damping=cfg.true_damping.copy(),
+        link_masses=masses,
+        torque_limits=cfg.torque_limits.copy(),
+        disturbance_constant=cfg.disturbance_constant.copy(),
+        disturbance_amplitude=cfg.disturbance_amplitude.copy(),
+        disturbance_frequency=cfg.disturbance_frequency.copy(),
+    )
+
+
+def manipulator_terms(
+    q: np.ndarray,
+    dq: np.ndarray,
+    masses: np.ndarray,
+    link_lengths_px: np.ndarray,
+    gravity: float = JointSpacePlant.GRAVITY,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return M(q), C(q,dq)dq, and G(q) for the full planar dynamics."""
+    link_lengths_m = np.asarray(link_lengths_px, dtype=float) / 200.0
+    masses = np.asarray(masses, dtype=float)
+    lc = link_lengths_m / 2.0
+    inertia = (1.0 / 12.0) * masses * (link_lengths_m ** 2)
+    M, G = _dynamics_matrices(np.asarray(q, dtype=float), masses, link_lengths_m, lc, inertia, gravity)
+    c_times_dq = _coriolis_vector(np.asarray(q, dtype=float), np.asarray(dq, dtype=float), masses, link_lengths_m, lc)
+    return M, c_times_dq, G
+
+
 def _dynamics_matrices(q: np.ndarray, masses: np.ndarray, lengths: np.ndarray, lc: np.ndarray, I: np.ndarray, g: float) -> tuple[np.ndarray, np.ndarray]:
     m1, m2, m3 = masses
     l1, l2, l3 = lengths

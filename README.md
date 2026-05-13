@@ -1,1002 +1,666 @@
-# Project 2: Adaptive and Robust Adaptive Control of a 3-DOF Planar Manipulator
+# Project 3: Backstepping and Adaptive Backstepping for a 3-DOF Planar Manipulator
 
-This project studies adaptive control for a fixed-base 3-link
-planar manipulator. The arm must track a moving target trajectory under
-large model mismatch and external joint torques. The implementation includes:
+This project applies backstepping control to high-precision end-effector tracking on a fully-actuated three-link planar manipulator with full rigid-body dynamics
 
-- a pure adaptive Lyapunov controller,
-- a robust adaptive controller with an added sliding-mode boundary-layer term,
-- a fixed-model Lyapunov baseline,
-- a plain joint-space PD baseline,
-- generated plots, rollout data, and GIF animations for the pure and robust
-  adaptive runs.
+$$M(q)\,\ddot q + C(q,\dot q)\,\dot q + G(q) + D\,\dot q = \tau.$$
+
+Four controllers are compared in two scenarios that stress different aspects of robustness:
+
+- a **nominal** scenario in which the link masses assumed by the controllers match the plant,
+- a **payload** scenario in which the real third-link mass is tripled while the controllers keep using the nominal mass model.
+
+The four controllers are
+
+- `backstepping_full` — backstepping with the full $M(q), C(q,\dot q), G(q)$ feedforward,
+- `backstepping_simp` — simplified backstepping that drops $C(q,\dot q)\dot q$ and uses only the diagonal of $M(q)$,
+- `adaptive_simp` — adaptive backstepping that estimates link masses online through a gravity regressor,
+- `adaptive` — the Slotine-Li adaptive controller carried over from Project 2 as a deliberately wrong-tool baseline.
+
+The mandatory Project 2+ comparison (§10 of the course requirements) is realised by examining all eight cases (four controllers × two scenarios).
 
 ## Quick Visual Summary
 
-The committed final comparison artifacts are grouped into two runs:
+Animations are organised under `animations/comparison/{nominal,payload}/`. Each scenario has one GIF per controller.
 
-- `figures/figures_pure/` and `animations/adaptive_manipulator_pure.gif`
-  show the pure adaptive controller against the baselines.
-- `figures/figures_robust/` and `animations/adaptive_manipulator_robust.gif`
-  show the robust adaptive controller against the same baselines.
+| Nominal scenario | Payload scenario (m₃ × 3) |
+|---|---|
+| ![nominal_backstepping_full](animations/comparison/nominal/backstepping_full.gif) | ![payload_adaptive_simp](animations/comparison/payload/adaptive_simp.gif) |
+| `backstepping_full` follows the reachable ellipse essentially perfectly. | `adaptive_simp` recovers a usable tracking performance even though the third-link mass is unknown and tripled. |
 
-The metrics JSON uses the key `adaptive` for the main experiment slot in both
-folders. In `figures/figures_robust/`, that slot contains the robust adaptive
-controller generated with `python main.py --robust`; the regenerated figures
-and GIF label it as `robust`.
+The full set of eight animations is in `animations/comparison/`.
 
-![Pure adaptive animation](animations/adaptive_manipulator_pure.gif)
+## Result Summary
 
-![Robust adaptive animation](animations/adaptive_manipulator_robust.gif)
+The headline metric is the tail-window mean of the joint tracking error norm $\|z_1\|$ over the last 2 seconds. The success-fraction column uses an end-effector error threshold of 10 px. The tracking Lyapunov candidate is $V_e = \tfrac{1}{2}(\|z_1\|^2 + \|z_2\|^2)$.
 
-## Project Structure
+| Scenario | Controller | Tail mean $\|z_1\|$ [rad] | Tail success | Final $V_e$ | RMS torque [Nm] |
+|---|---|---:|---:|---:|---:|
+| nominal | `backstepping_full` | **0.011** | **1.00** | **0.020** | 7.32 |
+| nominal | `backstepping_simp` | **0.008** | **1.00** | **0.006** | 37.77 |
+| nominal | `adaptive_simp` | 0.304 | 0.42 | 5.11 | 52.73 |
+| nominal | `adaptive` | 2.264 | 0.00 | 417.5 | 104.99 |
+| payload | `backstepping_full` | 1.087 | 0.00 | 98.0 | 14.70 |
+| payload | `backstepping_simp` | 1.231 | 0.00 | 105.1 | 39.00 |
+| payload | `adaptive_simp` | **0.196** | **0.77** | **7.01** | 50.62 |
+| payload | `adaptive` | 2.110 | 0.00 | 496.0 | 104.61 |
+
+Main conclusions:
+
+- In the nominal scenario both backstepping variants achieve essentially perfect tracking, with $\|z_1\|$ at the $10^{-2}$ rad level. The simplified variant is slightly tighter than the full one because its lower-amplitude torques interact well with the small Coriolis terms at the chosen reference speed; the closed-loop performance gain is incidental, not structural.
+- The payload scenario inverts the ranking. The two backstepping controllers degrade by two orders of magnitude in $V_e$ because they keep feeding forward the wrong gravity and inertia terms. The adaptive-backstepping variant `adaptive_simp` is the only one that recovers usable tracking, because it adapts the link-mass estimates through the gravity regressor.
+- The Slotine-Li adaptive controller fails in both scenarios. Its plant model (diagonal joint-space dynamics with constant bias) does not describe the full $M(q), C(q,\dot q), G(q)$ physics of this project, so the adaptation laws drive its parameter estimates away from any physically meaningful value. It is included as a deliberate wrong-tool baseline to motivate the methodological move to backstepping.
+- Persistent excitation is not provided by the elliptical reference, so the adaptive-backstepping mass estimates do not converge to the true masses (they drift towards the configured bounds via projection). This is consistent with classical adaptive-control theory: tracking is guaranteed without persistent excitation, parameter identification is not.
+
+## Repository Layout
 
 ```text
 .
-|-- README.md
-|-- requirements.txt
-|-- pyproject.toml
-|-- main.py
-|-- configs/
-|   `-- default.json
-|-- src/
-|   |-- __init__.py
-|   |-- config.py
-|   |-- system.py
-|   |-- controller.py
-|   |-- simulation.py
-|   |-- visualization.py
-|   `-- main.py
-|-- figures/
-|   |-- figures_pure/
-|   `-- figures_robust/
-`-- animations/
-    |-- adaptive_manipulator_pure.gif
-    `-- adaptive_manipulator_robust.gif
+├── README.md                              # this file
+├── LICENSE                                # MIT
+├── requirements.txt                       # numpy, scipy, matplotlib, pillow
+├── pyproject.toml                         # project metadata
+├── main.py                                # root launcher that calls src.main.main()
+├── simplified_backstepping_demo.py        # standalone scipy/solve_ivp demo
+├── configs/
+│   └── default.json                       # full hyperparameter set
+├── src/                                   # main four-way comparison code
+│   ├── __init__.py
+│   ├── config.py
+│   ├── system.py
+│   ├── controller.py
+│   ├── simulation.py
+│   ├── visualisation.py
+│   └── main.py
+├── ppo/                                   # earlier standalone backstepping demo
+│   ├── __init__.py
+│   ├── config.py
+│   ├── physics_robot.py
+│   └── backstepping_tracking.py
+├── figures/
+│   ├── comparison/
+│   │   ├── nominal/                       # 7 PNGs from main.py
+│   │   └── payload/                       # 7 PNGs from main.py
+│   ├── backstepping_tracking/             # PNGs from ppo/backstepping_tracking.py
+│   └── simplified_backstepping/           # PNGs from simplified_backstepping_demo.py
+├── animations/
+│   ├── comparison/
+│   │   ├── nominal/                       # 4 GIFs (one per controller)
+│   │   └── payload/                       # 4 GIFs (one per controller)
+│   ├── backstepping_tracking/             # manipulator_tracking.gif
+│   └── simplified_backstepping/           # simplified_tracking.gif
+├── data/
+│   ├── comparison/
+│   │   ├── nominal/                       # rollouts.csv, summary.csv
+│   │   └── payload/                       # rollouts.csv, summary.csv
+│   ├── backstepping_tracking/             # simulation_log.npz
+│   └── simplified_backstepping/           # simulation_log.npz
+└── notes/
+    └── project_1_stability.md             # historical, kept for reference
 ```
 
 Code responsibilities:
 
 | File | Responsibility |
 |---|---|
-| `src/system.py` | manipulator kinematics, moving obstacles, clearance, torque dynamics |
-| `src/controller.py` | reference generator, pure adaptive control, robust adaptive control, baselines |
-| `src/simulation.py` | closed-loop rollouts, metrics, CSV export, Lyapunov values |
-| `src/visualization.py` | figures and GIF animation |
-| `src/config.py` | JSON config loading into typed dataclasses |
-| `src/main.py` | command-line orchestration |
-| `main.py` | root launcher that calls `src.main.main()` |
+| `src/system.py` | Manipulator kinematics, full rigid-body dynamics $M(q), C(q,\dot q), G(q)$, RK4 integration with sub-stepping, payload-perturbation helper. |
+| `src/controller.py` | Reference generator and the four controllers used in this project. |
+| `src/simulation.py` | Closed-loop rollout, metrics, CSV export, Lyapunov values. |
+| `src/visualisation.py` | Figures and per-controller GIF animations. |
+| `src/config.py` | Typed dataclasses for hyperparameters; `default_config()` factory and `load_config()` JSON loader. |
+| `src/main.py` | CLI orchestration: runs both scenarios, generates artifacts. |
+| `main.py` | Root launcher that calls `src.main.main()`. |
+| `simplified_backstepping_demo.py` | Standalone demo using scipy `solve_ivp` and a simpler plant $M_{\text{diag}}\ddot q + G(q) = \tau$. |
+| `ppo/backstepping_tracking.py` | Earlier standalone numba-accelerated full-physics backstepping demo, kept for historical reproducibility. |
 
-## Problem Definition
+## 1. Problem Definition
 
-The control problem is to move the end effector of a 3-DOF planar arm along a
-moving target trajectory while compensating for uncertain joint dynamics. The
-project is an adaptive-control project, not a reinforcement-learning project.
+### Control task
 
-The state is
+The end-effector of a three-link, fully-actuated planar manipulator must track a time-varying reference trajectory in workspace coordinates. The reference is a closed ellipse at a fixed centre; the requested ellipse is automatically scaled to the largest reachable ellipse inside the manipulator's workspace, and the actual joint-space reference $q_d(t), \dot q_d(t), \ddot q_d(t)$ is obtained from the scaled ellipse through closed-form inverse kinematics with a configurable elbow sign and tool orientation. The joint-space reference is the input to all controllers.
 
-```math
-x =
-\begin{bmatrix}
-q^T & \dot q^T
-\end{bmatrix}^T
-\in \mathbb{R}^6,
-\qquad
-q =
-\begin{bmatrix}
-q_1 & q_2 & q_3
-\end{bmatrix}^T,
-\qquad
-\dot q =
-\begin{bmatrix}
-\dot q_1 & \dot q_2 & \dot q_3
-\end{bmatrix}^T.
+### Plant class
+
+The simulated plant is a fully-actuated rigid-body manipulator in joint space:
+
+$$M(q)\,\ddot q + C(q,\dot q)\,\dot q + G(q) + D\,\dot q = \tau + w(t),$$
+
+where $M(q)$ is the symmetric positive-definite inertia matrix, $C(q,\dot q)\dot q$ collects Coriolis and centrifugal forces, $G(q)$ is the gravity vector, $D$ is a diagonal viscous-friction matrix, $\tau$ is the joint-torque control input, and $w(t)$ is an optional bounded disturbance (set to zero in the committed runs). The integration uses a fourth-order Runge–Kutta scheme with adaptive sub-stepping (sub-step $\leq 0.5$ ms).
+
+### Assumptions
+
+- The full state $x = [q^\top\ \dot q^\top]^\top \in \mathbb{R}^6$ is available for feedback.
+- Link lengths and geometry are perfectly known; only the link masses may differ between the controller's model and the true plant (this is the payload scenario).
+- Joint torques are saturated to configured limits inside the simulator (`np.clip` before integration); the saturation is not modelled in the formal stability arguments.
+- No sensor noise, measurement delay, or actuator dynamics are simulated.
+
+### Class of methods
+
+Two related Lyapunov-based design ideas from the Advanced Control Methods course are used:
+
+1. **Backstepping** with full or simplified model feedforward, for the nominal case in which the controller's model matches the plant.
+2. **Adaptive backstepping** with a parameter regressor for the link masses, for the case in which the masses are unknown or perturbed.
+
+A Slotine-Li adaptive controller designed for a different (diagonal joint-space) plant class is included as a deliberately wrong-tool baseline.
+
+## 2. System Description
+
+### Geometry
+
+The manipulator has three revolute joints and link lengths
+
+$$L = [90,\, 70,\, 40]\ \text{px}.$$
+
+Pixel units are converted to metres inside the dynamics by dividing by 200, so the physical link lengths are $L_m = [0.45,\, 0.35,\, 0.20]$ m. The base is at the origin. Each link has its centre of mass at its midpoint and a thin-rod inertia $I_i = \tfrac{1}{12} m_i L_{m,i}^2$.
+
+For joint $k$ define the cumulative angle $\alpha_k(q) = \sum_{\ell=1}^{k} q_\ell$. The forward kinematics for the position at the end of link $i$ are
+
+$$p_i(q) = \sum_{k=1}^{i} L_k \begin{bmatrix} \cos \alpha_k(q) \\ \sin \alpha_k(q) \end{bmatrix},\qquad i=1,2,3.$$
+
+The end-effector position is $p_3(q)$.
+
+### State, input, constraints
+
+| Quantity | Symbol | Range or units |
+|---|---|---|
+| Joint angles | $q \in \mathbb{R}^3$ | rad, wrapped to $(-\pi, \pi]$ |
+| Joint velocities | $\dot q \in \mathbb{R}^3$ | rad/s, clipped to $[-15, 15]$ inside the simulator for numerical safety |
+| Control input | $\tau \in \mathbb{R}^3$ | Nm, clipped to $\pm[80, 60, 40]$ |
+| Link masses (true) | $m \in \mathbb{R}^3$ | kg, $[1.0, 0.7, 0.6]$ nominally |
+| Damping | $D = \mathrm{diag}(d_1,d_2,d_3)$ | $[0.08, 0.06, 0.05]$ |
+| Gravity | $g$ | $9.81$ m/s² |
+
+### Equations of dynamics
+
+The inertia matrix entries (derived from the standard planar-3R energy method) are
+
+$$M_{33} = I_3 + m_3 \ell_{c3}^2$$
+
+$$M_{23} = M_{33} + m_3 L_{m,2}\, \ell_{c3} \cos q_3$$
+
+$$M_{13} = M_{33} + m_3 L_{m,2}\, \ell_{c3}\cos q_3 + m_3 L_{m,1}\, \ell_{c3}\cos(q_2+q_3)$$
+
+$$M_{22} = I_2 + m_2 \ell_{c2}^2 + I_3 + m_3\bigl(L_{m,2}^2 + \ell_{c3}^2 + 2 L_{m,2}\ell_{c3}\cos q_3\bigr)$$
+
+$$M_{12} = M_{22} + (m_2 L_{m,1}\ell_{c2} + m_3 L_{m,1} L_{m,2})\cos q_2 + m_3 L_{m,1}\ell_{c3}\cos(q_2+q_3)$$
+
+$$\begin{aligned}M_{11} = \;&I_1 + m_1 \ell_{c1}^2 + m_2\bigl(L_{m,1}^2 + \ell_{c2}^2 + 2 L_{m,1}\ell_{c2}\cos q_2\bigr) \\ &+ m_3\bigl(L_{m,1}^2 + L_{m,2}^2 + \ell_{c3}^2 + 2 L_{m,1} L_{m,2} \cos q_2 + 2 L_{m,2}\ell_{c3}\cos q_3 + 2 L_{m,1}\ell_{c3}\cos(q_2+q_3)\bigr)\end{aligned}$$
+
+with $M$ symmetric: $M_{ji} = M_{ij}$. Here $\ell_{ci} = L_{m,i}/2$ is the centre-of-mass distance along link $i$.
+
+The gravity vector is
+
+$$G_3 = m_3\, g\, \ell_{c3} \cos(q_1+q_2+q_3)$$
+
+$$G_2 = (m_2 \ell_{c2} + m_3 L_{m,2})\, g \cos(q_1+q_2) + G_3$$
+
+$$G_1 = (m_1 \ell_{c1} + (m_2+m_3) L_{m,1})\, g \cos(q_1) + G_2.$$
+
+The Coriolis vector $c(q,\dot q) = C(q,\dot q)\dot q$ is built in `src/system.py` (`_coriolis_vector`). Its entries are derived from the Christoffel symbols of $M$, so the skew-symmetry property $\dot M - 2C = -(\dot M - 2C)^\top$ holds by construction. This property is the foundation of the canonical mechanical-system Lyapunov argument; the present implementation uses an unweighted simplification (Section 4.1).
+
+### Reference trajectory
+
+The requested end-effector trajectory is the ellipse
+
+$$p_r(t) = c_e + \begin{bmatrix} a_x \cos(\omega t) \\ a_y \sin(\omega t) \end{bmatrix},\quad c_e = (60, 0),\ a_x = 165,\ a_y = 45,\ \omega = 0.7\ \text{rad/s}.$$
+
+If the requested ellipse extends outside the manipulator's reachable workspace, the code (`ppo/backstepping_tracking.py`, function `ellipse_workspace_scale`) samples the ellipse at 720 points and finds the largest uniform scale $s \in (0, 1]$ for which the whole ellipse is reachable for the configured elbow sign and tool orientation. The scaled and projected ellipse $p_d^{\text{ee}}(t)$ is then inverted to joint-space using closed-form planar-3R inverse kinematics (`inverse_kinematics_3dof`), and $\dot q_d, \ddot q_d$ are obtained by central differences with `derivative_dt = 1e-4` s.
+
+### Payload perturbation
+
+The payload scenario (`--payload`, or `SIMULATE_PAYLOAD_ERROR=True` in the config) replaces the true plant dynamics with one in which the third-link mass $m_3$ and its inertia are multiplied by `PAYLOAD_MULTIPLIER = 3.0`. The controllers, however, continue to use the nominal masses. This creates a structural model mismatch in $M(q)$ and $G(q)$ of about a factor 3 in the third joint, which feedforward-only controllers cannot reject.
+
+## 3. Mathematical Specification
+
+The notation below is used consistently across the rest of the README, the code, and the plots. Each symbol is introduced once and never reused with another meaning.
+
+| Symbol | Meaning | Code variable |
+|---|---|---|
+| $q \in \mathbb{R}^3$ | joint angles | `q` |
+| $\dot q,\ \ddot q \in \mathbb{R}^3$ | joint velocities, accelerations | `dq`, `ddq` |
+| $q_d, \dot q_d, \ddot q_d$ | desired joint trajectory | `ReferenceState.q`, `.dq`, `.ddq` |
+| $z_1 = q - q_d$ | position tracking error | `ControlInfo.q_error` |
+| $\alpha = \dot q_d - K_1 z_1$ | virtual control (desired $\dot q$) | implicit in `_backstepping_errors` |
+| $z_2 = \dot q - \alpha$ | velocity error w.r.t. virtual control | `ControlInfo.sliding_error` |
+| $\dot\alpha = \ddot q_d - K_1 (\dot q - \dot q_d)$ | time derivative of $\alpha$ | computed inline |
+| $\tau \in \mathbb{R}^3$ | applied joint torques | `Rollout.tau` |
+| $\tau_{\text{raw}}$ | commanded torque before saturation | `Rollout.tau_raw` |
+| $M(q), C(q,\dot q), G(q)$ | full rigid-body matrices | `manipulator_terms()` |
+| $M_{\text{diag}}(m)$ | diagonal of $M(q)$ | inside `BacksteppingSimplified`, `AdaptiveSimplifiedController` |
+| $K_1, K_2 \in \mathbb{R}^{3\times 3}$ | backstepping diagonal positive gains | `backstepping_controller.k1`, `.k2` |
+| $m = [m_1, m_2, m_3]^\top$ | true link masses | `dynamics.link_masses` |
+| $\hat m,\ \tilde m = \hat m - m$ | mass estimate and error | `ControlInfo.mass_hat` |
+| $Y_g(q)$ | gravity regressor, $G(q,m) = Y_g(q)\, m$ | `_gravity_mass_regressor` |
+| $\Gamma_m$ | adaptation gain matrix for masses | `adaptive_controller.gamma_mass` |
+| $\Gamma_D$ | adaptation gain matrix for damping | `adaptive_controller.gamma_damping` |
+| $V$ | non-augmented Lyapunov candidate | `Rollout.tracking_lyapunov` |
+| $V_a$ | augmented (parameter-error including) Lyapunov candidate | `Rollout.augmented_lyapunov` |
+
+## 4. Method Description
+
+### 4.1 Backstepping design (nominal case)
+
+The plant is a chain of two integrators: the joint velocity $\dot q$ governs how $q$ evolves, and $\tau$ governs how $\dot q$ evolves through $M(q)$. Backstepping is the systematic Lyapunov-based design that handles such cascaded structures.
+
+**Step 1 — position-error subsystem with virtual control.**
+
+Define the position tracking error
+
+$$z_1 = q - q_d.$$
+
+Its dynamics are $\dot z_1 = \dot q - \dot q_d$. If $\dot q$ were a free control input, choosing $\dot q = \alpha(z_1, t)$ with
+
+$$\alpha(z_1, t) = \dot q_d - K_1 z_1, \qquad K_1 = K_1^\top \succ 0,$$
+
+would give $\dot z_1 = -K_1 z_1$, which is exponentially stable. The function $\alpha$ is the *virtual control* for the position-error subsystem.
+
+**Step 2 — velocity-error layer.**
+
+Because $\dot q$ is not the real control, define
+
+$$z_2 = \dot q - \alpha,$$
+
+so that
+
+$$\dot z_1 = \dot q - \dot q_d = z_2 + \alpha - \dot q_d = z_2 - K_1 z_1.$$
+
+The position-error subsystem is now an exponentially stable system driven by $z_2$; if $z_2 \to 0$, then $z_1 \to 0$.
+
+**Step 3 — velocity-error dynamics.**
+
+Differentiating $z_2$ and using $M\ddot q = \tau - C\dot q - G$,
+
+$$\dot z_2 = \ddot q - \dot\alpha = M(q)^{-1}\bigl[\tau - C(q,\dot q)\dot q - G(q)\bigr] - \dot\alpha,$$
+
+where $\dot\alpha = \ddot q_d - K_1 \dot z_1 = \ddot q_d - K_1(\dot q - \dot q_d)$ is a known signal.
+
+**Step 4 — Lyapunov candidate.**
+
+Take
+
+$$V = \tfrac{1}{2}\, z_1^\top z_1 + \tfrac{1}{2}\, z_2^\top z_2.$$
+
+*Approximation note.* The canonical backstepping derivation for mechanical systems weights $z_2$ by $M(q)$:
+
+$$V_{\text{canonical}} = \tfrac{1}{2}z_1^\top z_1 + \tfrac{1}{2}\,z_2^\top M(q)\, z_2,$$
+
+and exploits the skew-symmetry of $\dot M - 2C$ for cancellation. The present implementation uses the unweighted form for simplicity: it costs a clean energy interpretation but yields the same closed-loop result once the control law is chosen accordingly. This is stated explicitly to satisfy the "no hidden approximations" rule (§5 of the course requirements).
+
+**Step 5 — derivative of $V$.**
+
+$$\dot V = z_1^\top \dot z_1 + z_2^\top \dot z_2 = z_1^\top (z_2 - K_1 z_1) + z_2^\top \bigl[ M^{-1}(\tau - C\dot q - G) - \dot\alpha \bigr].$$
+
+Expanding,
+
+$$\dot V = -z_1^\top K_1 z_1 + z_1^\top z_2 + z_2^\top \bigl[ M^{-1}(\tau - C\dot q - G) - \dot\alpha \bigr].$$
+
+**Step 6 — control choice.**
+
+We want the cross-term $z_1^\top z_2$ to be cancelled and the $z_2$-bracket to deliver an additional negative-definite contribution $-z_2^\top K_2 z_2$. This holds if
+
+$$M^{-1}(\tau - C\dot q - G) - \dot\alpha = -z_1 - K_2 z_2, \qquad K_2 = K_2^\top \succ 0,$$
+
+equivalently
+
+$$\boxed{\;\tau = M(q)\bigl(\dot\alpha - z_1 - K_2 z_2\bigr) + C(q,\dot q)\dot q + G(q).\;}$$
+
+This is the **backstepping torque law**. It is exactly the formula implemented in `BacksteppingFull.compute` (`src/controller.py`).
+
+**Step 7 — closed-loop $\dot V$ and asymptotic tracking.**
+
+Substituting the chosen $\tau$ back,
+
+$$\dot V = -z_1^\top K_1 z_1 - z_2^\top K_2 z_2 \le 0,$$
+
+with equality only at $z_1 = z_2 = 0$. By LaSalle's invariance principle (or Barbalat's lemma, since the reference is time-varying), $z_1(t) \to 0$ and $z_2(t) \to 0$. From $z_2 \to 0$ and $\dot z_1 = z_2 - K_1 z_1$, $\dot q \to \dot q_d$. Hence **asymptotic joint-space tracking is guaranteed** under the standing assumptions (full state available, exact $M, C, G$, no torque saturation).
+
+### 4.2 Simplified backstepping
+
+`BacksteppingSimplified` drops two pieces of model information:
+
+- the Coriolis term $C(q,\dot q)\dot q$ is set to zero,
+- only the diagonal entries of $M(q)$ are kept.
+
+The torque law becomes
+
+$$\tau = M_{\text{diag}}(q)\bigl(\dot\alpha - z_1 - K_2 z_2\bigr) + G(q).$$
+
+For this approximation to behave like a backstepping controller, the Coriolis term must be small along the trajectory and the off-diagonal coupling in $M(q)$ must not dominate. On the configured ellipse at $\omega = 0.7$ rad/s with masses of order $1$ kg, both conditions hold reasonably well in the nominal scenario; the closed-loop $\dot V$ is no longer guaranteed to be negative definite pointwise but stays negative on average. Under model mismatch (payload scenario) the missing terms can no longer be assumed small and the controller degrades.
+
+### 4.3 Adaptive backstepping with a gravity regressor
+
+`AdaptiveSimplifiedController` handles unknown link masses while reusing the simplified plant model $M_{\text{diag}}\ddot q + G(q,m) = \tau$ (with $C = 0$). The key structural fact is that **$G(q, m)$ is linear in the mass vector** $m$:
+
+$$G(q, m) = Y_g(q)\, m, \qquad Y_g(q) \in \mathbb{R}^{3\times 3}.$$
+
+The columns of $Y_g(q)$ are obtained by computing $G(q, e_i)$ for the canonical mass vectors $e_i \in \mathbb{R}^3$; this is exactly what `_gravity_mass_regressor` does in the code.
+
+Let $\hat m(t)$ be the running mass estimate, $\tilde m = \hat m - m$ the parameter error, and $\Gamma_m = \Gamma_m^\top \succ 0$ a chosen adaptation gain. The control law is
+
+$$\tau = M_{\text{diag}}(\hat m)\bigl(\dot\alpha - z_1 - K_2 z_2\bigr) + \hat D \dot q + G(q, \hat m),$$
+
+i.e. the simplified backstepping law evaluated at the *current estimates*. (The code also adapts the diagonal damping $D$; the mass-only derivation is shown below for clarity, the damping case is structurally identical.)
+
+**Augmented Lyapunov candidate.**
+
+$$V_a = \tfrac{1}{2}\, z_1^\top z_1 + \tfrac{1}{2}\, z_2^\top z_2 + \tfrac{1}{2}\, \tilde m^\top \Gamma_m^{-1}\, \tilde m.$$
+
+**Derivation of $\dot V_a$.**
+
+The first two terms behave as in Section 4.1 except that the backstepping cancellation now leaves a residual gravity parameter error. Writing $G(q, \hat m) - G(q, m) = Y_g(q)\, \tilde m$, the $z_2$-dynamics become
+
+$$M_{\text{diag}}\, \dot z_2 = -M_{\text{diag}}\, z_1 - M_{\text{diag}}\, K_2 z_2 - Y_g(q)\, \tilde m,$$
+
+so
+
+$$\dot V_a = -z_1^\top K_1 z_1 - z_2^\top K_2 z_2 - z_2^\top Y_g(q)\, \tilde m + \tilde m^\top \Gamma_m^{-1}\, \dot{\hat m}.$$
+
+(The parameter error has constant time derivative $\dot{\tilde m} = \dot{\hat m}$ because $m$ is constant.)
+
+**Adaptation law derivation.**
+
+The parameter-error terms cancel iff the last two summands sum to zero:
+
+$$\tilde m^\top \Gamma_m^{-1}\, \dot{\hat m} - z_2^\top Y_g(q)\, \tilde m = 0 \quad\Longleftrightarrow\quad \tilde m^\top \bigl( \Gamma_m^{-1}\, \dot{\hat m} - Y_g(q)^\top z_2 \bigr) = 0.$$
+
+For this to hold for every realisation of $\tilde m$, the bracket must vanish, giving the **adaptation law**
+
+$$\boxed{\;\dot{\hat m} = -\Gamma_m\, Y_g(q)^\top z_2.\;}$$
+
+This is the formula implemented as
+
+```python
+self.mass_hat = np.clip(
+    mass_hat + dt * (-self.cfg.gamma_mass * (gravity_regressor.T @ z2)),
+    self.cfg.mass_bounds[0],
+    self.cfg.mass_bounds[1],
+)
 ```
 
-Here $q_i$ is the angle of joint $i$ in radians and $\dot q_i$ is its angular
-velocity. The control input is the joint torque vector
+in `AdaptiveSimplifiedController.compute`. With this law,
 
-```math
-\tau =
-\begin{bmatrix}
-\tau_1 & \tau_2 & \tau_3
-\end{bmatrix}^T.
-```
+$$\dot V_a = -z_1^\top K_1 z_1 - z_2^\top K_2 z_2 \le 0.$$
 
-The default torque constraint in `configs/default.json` is
+**Conclusion.** By LaSalle/Barbalat, $z_1(t) \to 0$ and $z_2(t) \to 0$, so **tracking is asymptotic even with unknown masses**. The parameter error $\tilde m$ is only guaranteed to be bounded; convergence $\hat m \to m$ additionally requires persistent excitation, which is not provided by the elliptical reference. The implementation also clips $\hat m$ into configured bounds (projection method) to prevent drift caused by discrete-time effects.
+
+### 4.4 The Slotine-Li adaptive baseline (wrong-tool case)
+
+`AdaptiveLyapunovController` was designed in Project 2 for a different plant class: diagonal joint-space dynamics $H\ddot q + D\dot q = \tau + b$ with unknown constant scalars $H_i, D_i, b_i$. Its torque law
+
+$$\tau = \hat H\, \ddot q_r + \hat D\, \dot q - \hat b - K_s s,\quad s = \dot e + \lambda e,\quad e = q - q_d,$$
+
+and its adaptation laws assume this structure. When applied to the present full $M(q), C(q,\dot q), G(q)$ plant, those structural assumptions are violated: the true plant has off-diagonal couplings, configuration-dependent inertia, and a configuration-dependent gravity term, none of which the Project-2 controller can represent. The adaptation laws still update $\hat H, \hat D, \hat b$, but they push these scalars in directions that do not minimise tracking error in the true plant. This controller is included as a deliberate negative example to motivate the methodological move to backstepping for this project class.
+
+## 5. Algorithm Listing
+
+The same outer loop applies to all four controllers; only the torque law and the (optional) parameter update step differ. Pseudocode for a single rollout:
 
 ```text
-|tau_i| <= 60, i = 1,2,3.
+Input: configuration cfg, controller C, real dynamics D_real
+1.  Initialise arm geometry, planner, plant from cfg; plant uses D_real
+2.  Reset controller state (parameter estimates, etc.)
+3.  Build time grid t_0, t_1, ..., t_N with step dt
+4.  for k = 0 to N:
+5.      ref ← planner.step(t_k, dt)               // computes q_d, q̇_d, q̈_d
+6.      q, q̇ ← plant state
+7.      Compute the backstepping errors:
+            z₁ ← q − q_d
+            α  ← q̇_d − K₁ z₁
+            z₂ ← q̇ − α
+            α̇  ← q̈_d − K₁ (q̇ − q̇_d)
+8.      Compute torque according to controller C:
+            BacksteppingFull:        τ = M(q) (α̇ − z₁ − K₂ z₂) + C(q, q̇) q̇ + G(q)
+            BacksteppingSimplified:  τ = M_diag(q) (α̇ − z₁ − K₂ z₂) + G(q)
+            AdaptiveSimplified:      τ = M_diag(q, m̂) (α̇ − z₁ − K₂ z₂) + D̂ q̇ + G(q, m̂)
+            AdaptiveLyapunov:        τ = Ĥ q̈_r + D̂ q̇ − b̂ − K_s s,
+                                          s   = (q̇ − q̇_d) + λ (q − q_d),
+                                          q̈_r = q̈_d − λ (q̇ − q̇_d)
+9.      Clip τ to actuator bounds: τ ← clip(τ_raw, −τ_max, τ_max)
+10.     If controller is adaptive, update estimates:
+            AdaptiveSimplified:  m̂ ← m̂ + dt · (−Γ_m  Y_g(q)ᵀ z₂)
+                                 D̂ ← D̂ + dt · (−Γ_D · z₂ ⊙ q̇)
+                                 followed by projection into bounds
+            AdaptiveLyapunov:    Ĥ, D̂, b̂ updated as in Project 2
+11.     Log all signals; advance the plant by RK4 with sub-stepping (sub-step ≤ 0.5 ms)
+12. end for
+13. Compute Lyapunov candidates V_e (all controllers) and V_a (adaptive only)
+14. Compute summary metrics: tail mean errors, success fraction, torque RMS, saturation fraction
+15. Export rollouts.csv, summary.csv, PNG plots, per-controller GIF
 ```
 
-The implementation uses a simplified diagonal joint-space plant rather than a
-full rigid-body manipulator model. This simplification is intentional: it keeps
-the plant linear in unknown constant parameters, which is the structure needed
-for the Lyapunov adaptive-control proof.
+The driver in `src/main.py` runs the above loop for each (controller, scenario) pair and writes the artifacts into the directory tree shown in the Repository Layout section.
 
-## System Description
+## 6. Experimental Setup
 
-The arm has three revolute joints and link lengths
-
-```text
-L = [90, 70, 40] px.
-```
-
-The fixed base is
-
-```text
-p_base = [400, 600] px.
-```
-
-For link endpoint `i`, define the cumulative joint angle
-
-```math
-\alpha_k(q) = \sum_{\ell=1}^{k} q_\ell.
-```
-
-The forward kinematics are
-
-```math
-p_i(q)
-=
-p_{base}
-+
-\sum_{k=1}^{i}
-L_k
-\begin{bmatrix}
-\cos \alpha_k(q) \\
-\sin \alpha_k(q)
-\end{bmatrix},
-\qquad i=1,2,3.
-```
-
-The end-effector position is $p_3(q)$. The point Jacobian for endpoint $i$ is
-denoted by
-
-```math
-J_i(q) = \frac{\partial p_i(q)}{\partial q}.
-```
-
-The moving target is an ellipse:
-
-```math
-p_T(t)
-=
-c_T
-+
-\begin{bmatrix}
-a_x \cos(\omega_T t) \\
-a_y \sin(\omega_T t)
-\end{bmatrix}.
-```
-
-Its velocity is
-
-```math
-\dot p_T(t)
-=
-\begin{bmatrix}
--a_x \omega_T \sin(\omega_T t) \\
-a_y \omega_T \cos(\omega_T t)
-\end{bmatrix}.
-```
-
-The code also supports moving circular obstacles. Obstacle `j` has radius
-`r_obs` and center
-
-```math
-c_j(t)
-=
-c_{j,0}
-+
-\begin{bmatrix}
-A_{jx}\cos(\omega_j t + \phi_j) \\
-A_{jy}\sin(\omega_j t + \phi_j)
-\end{bmatrix}.
-```
-
-The final committed pure and robust comparison artifacts were generated with
-`--no-obstacles` to isolate disturbance rejection. That is why the stored
-summary metrics show `min_clearance_px = 1000000.0`, the sentinel value used
-when obstacle clearance is disabled. The obstacle-aware planner and clearance
-measurement remain implemented, and obstacle-enabled runs are produced by
-omitting `--no-obstacles`.
-
-## Plant Dynamics and Uncertainty
-
-The simulated plant is
-
-```math
-H \ddot q + D \dot q = \tau + b + w(t).
-```
-
-Definitions:
-
-- $H = diag(H_1,H_2,H_3)$ is the true positive diagonal inertia matrix.
-- $D = diag(D_1,D_2,D_3)$ is the true positive diagonal viscous damping matrix.
-- $b \in \mathbb{R}^3$ is an unknown constant joint-torque bias.
-- $w(t) \in \mathbb{R}^3$ is an optional bounded time-varying joint disturbance.
-- $\tau$ is clipped to the configured actuator limits before integration.
-
-The default values are
-
-```text
-H = [18, 10, 5]
-D = [16, 9, 4]
-b = [25, -20, 10]
-w(t) = [9 sin(5t), 8 sin(9t), 4 sin(3t)]
-```
-
-The plant is integrated using fourth-order Runge-Kutta with default step
-`dt = 0.02 s`.
-
-The unknown constant parameter vector for joint `i` is
-
-```math
-\theta_i =
-\begin{bmatrix}
-H_i & D_i & b_i
-\end{bmatrix}^T.
-```
-
-The time-varying part $w(t)$ is not part of this parameter vector. The pure
-adaptive asymptotic proof therefore applies exactly to the case $w(t)=0$; with
-nonzero $w(t)$, pure adaptive control is a stress test. The robust adaptive
-controller adds a sliding term to improve bounded-disturbance rejection.
-
-## Reference Generator
-
-The controller does not directly plan in task space. Instead, a kinematic
-reference generator creates a desired joint trajectory
-
-```math
-q_d(t), \qquad \dot q_d(t), \qquad \ddot q_d(t).
-```
-
-The target-tracking task-space velocity is
-
-```math
-v_g
-=
-k_g (p_T - p_3(q_d)) + \dot p_T.
-```
-
-The generator maps this task velocity to joint velocity with damped least
-squares:
-
-```math
-\dot q_g
-=
-J_3(q_d)^T
-\left(
-J_3(q_d)J_3(q_d)^T + \eta^2 I_2
-\right)^{-1}
-v_g.
-```
-
-When obstacles are enabled, every link endpoint receives a repulsive velocity
-when it is inside the configured influence distance. For endpoint `i` and
-obstacle center `c_j`, let
-
-```math
-\delta_{ij} = p_i(q_d) - c_j,
-\qquad
-d_{ij} = \|\delta_{ij}\|,
-\qquad
-\chi_{ij} = d_{ij} - r_{obs} - m_{safe}.
-```
-
-For $\chi_{ij}$ below the influence distance, the code adds a repulsive point
-velocity in the direction $\delta_{ij} / d_{ij}$, then maps it into joint space using
-$J_i(q_d)^T$. The final desired joint velocity is clipped to
-the configured `max_joint_speed` and integrated to update $q_d$.
-
-This planner is heuristic. The formal control proof below is a reference
-tracking proof: if the generated reference is bounded and differentiable, the
-adaptive controller tracks it. The proof is not a formal global obstacle-safety
-certificate.
-
-## Filtered Tracking Variables
-
-For all model-based controllers, define the tracking error
-
-```math
-e = q - q_d,
-\qquad
-\dot e = \dot q - \dot q_d.
-```
-
-The filtered error, also called the sliding variable, is
-
-```math
-s = \dot e + \lambda e,
-\qquad \lambda > 0.
-```
-
-The filtered reference velocity and acceleration are
-
-```math
-\dot q_r = \dot q_d - \lambda e,
-\qquad
-\ddot q_r = \ddot q_d - \lambda \dot e.
-```
-
-Since
-
-```math
-\dot s = \ddot q - \ddot q_r,
-```
-
-controlling $s$ controls both the position and velocity tracking errors through
-the stable first-order relation
-
-```math
-\dot e + \lambda e = s.
-```
-
-## Pure Adaptive Controller
-
-The pure adaptive controller estimates inertia, damping, and constant bias:
-
-```math
-\hat H = diag(\hat H_1,\hat H_2,\hat H_3),
-\qquad
-\hat D = diag(\hat D_1,\hat D_2,\hat D_3),
-\qquad
-\hat b =
-\begin{bmatrix}
-\hat b_1 & \hat b_2 & \hat b_3
-\end{bmatrix}^T.
-```
-
-Its torque law is
-
-```math
-\tau
-=
-\hat H \ddot q_r
-+
-\hat D \dot q
--
-\hat b
--
-K_s s,
-```
-
-where $K_s = diag(k_{s,1},k_{s,2},k_{s,3})$ is positive definite.
-
-For joint `i`, the regressor form is
-
-```math
-Y_i(q,\dot q,\ddot q_r)
-=
-\begin{bmatrix}
-\ddot q_{r,i} & \dot q_i & -1
-\end{bmatrix},
-\qquad
-Y_i\hat\theta_i
-=
-\hat H_i \ddot q_{r,i}
-+
-\hat D_i \dot q_i
--
-\hat b_i.
-```
-
-The update laws are
-
-```math
-\dot{\hat H}_i = -\gamma_{H_i} s_i \ddot q_{r,i},
-\qquad
-\dot{\hat D}_i = -\gamma_{D_i} s_i \dot q_i,
-\qquad
-\dot{\hat b}_i = \gamma_{b_i} s_i,
-```
-
-with positive adaptation gains $\gamma_{H_i}$, $\gamma_{D_i}$, and $\gamma_{b_i}$.
-The implementation projects the estimates into configured bounds to keep them
-finite in discrete time.
-
-## Robust Adaptive Controller
-
-The robust adaptive controller uses the same filtered errors and the same
-parameter adaptation laws, but adds a boundary-layer sliding term:
-
-```math
-\tau
-=
-\hat H \ddot q_r
-+
-\hat D \dot q
--
-\hat b
--
-K_R s
--
-\rho\,sat(s/\varepsilon).
-```
-
-Here
-
-```math
-sat(z_i)
-=
-\begin{cases}
-1, & z_i > 1, \\
-z_i, & |z_i| \le 1, \\
--1, & z_i < -1.
-\end{cases}
-```
-
-The current implementation sets $K_R = 2K_s$, $\rho = 5.0$, and $\varepsilon = 0.5$
-inside `RobustAdaptiveController`. These robust gains are currently hard-coded
-in `src/controller.py`, while the base adaptive gains are read from
-`configs/default.json`.
-
-The purpose of the extra term is to dissipate energy caused by the bounded
-unmodeled disturbance $w(t)$. It trades a small boundary layer around $s = 0$
-for improved disturbance rejection.
-
-## Baseline Controllers
-
-The fixed Lyapunov baseline uses the same filtered-error structure but does not
-adapt:
-
-```math
-\tau
-=
-H_0 \ddot q_r
-+
-D_0 \dot q
--
-K_s s.
-```
-
-It uses incorrect nominal values $H_0$ and $D_0$, and it has no estimate of the
-constant bias $b$.
-
-The plain PD baseline is
-
-```math
-\tau = -K_p e - K_d \dot e.
-```
-
-It has no model compensation and no adaptation. These baselines satisfy the
-Project 2 comparison requirement: they show steady-state error and poor
-tracking under uncertainty compared with adaptive and robust adaptive control.
-
-## Lyapunov Proof for Pure Adaptive Control
-
-This proof is for the nominal adaptive model with unknown constant
-$H$, $D$, and $b$, and with $w(t)=0$. It also assumes no actuator saturation,
-exact state measurement, bounded differentiable reference signals, and positive
-diagonal inertia.
-
-Define parameter errors
-
-```math
-\tilde H = \hat H - H,
-\qquad
-\tilde D = \hat D - D,
-\qquad
-\tilde b = \hat b - b.
-```
-
-Using $\dot s = \ddot q - \ddot q_r$ and the plant equation
-
-```math
-H\ddot q + D\dot q = \tau + b,
-```
-
-we get
-
-```math
-H\dot s
-=
-\tau + b - D\dot q - H\ddot q_r.
-```
-
-Substitute the adaptive torque law:
-
-```math
-H\dot s
-=
--K_s s
-+
-\tilde H \ddot q_r
-+
-\tilde D \dot q
--
-\tilde b.
-```
-
-Use the augmented Lyapunov candidate
-
-```math
-V
-=
-\frac{1}{2}s^T Hs
-+
-\sum_{i=1}^{3}
-\frac{\tilde H_i^2}{2\gamma_{H_i}}
-+
-\sum_{i=1}^{3}
-\frac{\tilde D_i^2}{2\gamma_{D_i}}
-+
-\sum_{i=1}^{3}
-\frac{\tilde b_i^2}{2\gamma_{b_i}}.
-```
-
-Because $H$, $D$, and $b$ are constant,
-$\dot{\tilde H} = \dot{\hat H}$, $\dot{\tilde D} = \dot{\hat D}$, and
-$\dot{\tilde b} = \dot{\hat b}$. Therefore
-
-```math
-\dot V
-=
-s^T H\dot s
-+
-\sum_i \frac{\tilde H_i \dot{\hat H}_i}{\gamma_{H_i}}
-+
-\sum_i \frac{\tilde D_i \dot{\hat D}_i}{\gamma_{D_i}}
-+
-\sum_i \frac{\tilde b_i \dot{\hat b}_i}{\gamma_{b_i}}.
-```
-
-Substituting the closed-loop error dynamics gives
-
-```math
-\dot V
-=
--s^T K_s s
-+
-\sum_i s_i\tilde H_i\ddot q_{r,i}
-+
-\sum_i s_i\tilde D_i\dot q_i
--
-\sum_i s_i\tilde b_i
-+
-\sum_i \frac{\tilde H_i \dot{\hat H}_i}{\gamma_{H_i}}
-+
-\sum_i \frac{\tilde D_i \dot{\hat D}_i}{\gamma_{D_i}}
-+
-\sum_i \frac{\tilde b_i \dot{\hat b}_i}{\gamma_{b_i}}.
-```
-
-Now substitute the adaptive laws:
-
-```math
-\frac{\tilde H_i \dot{\hat H}_i}{\gamma_{H_i}}
-=
--\tilde H_i s_i\ddot q_{r,i},
-\qquad
-\frac{\tilde D_i \dot{\hat D}_i}{\gamma_{D_i}}
-=
--\tilde D_i s_i\dot q_i,
-\qquad
-\frac{\tilde b_i \dot{\hat b}_i}{\gamma_{b_i}}
-=
-\tilde b_i s_i.
-```
-
-All parameter-error cross terms cancel:
-
-```math
-\dot V = -s^T K_s s \le 0.
-```
-
-Thus $V(t)$ is nonincreasing, $s$ is bounded, and all projected parameter
-estimates stay bounded. Since
-
-```math
-\int_0^\infty s(t)^T K_s s(t)\,dt
-\le
-V(0) - V(\infty)
-<
-\infty,
-```
-
-the filtered error is square integrable. Under the standard bounded-reference
-and bounded-regressor assumptions, $\dot s$ is bounded. Barbalat's lemma then
-gives
-
-```math
-s(t) \to 0.
-```
-
-Finally, $\dot e + \lambda e = s$ is an exponentially stable linear filter driven
-by an input that converges to zero. Therefore
-
-```math
-e(t) \to 0,
-\qquad
-\dot e(t) \to 0.
-```
-
-The proof guarantees tracking, not exact parameter identification. Exact
-parameter convergence additionally requires persistent excitation, which is not
-guaranteed by the target trajectory.
-
-## Robust Adaptive Stability Argument
-
-Now include a bounded time-varying disturbance:
-
-```math
-H\ddot q + D\dot q = \tau + b + w(t),
-\qquad
-\|w(t)\| \le \bar w.
-```
-
-With the robust adaptive torque law and the same adaptive updates, the same
-Lyapunov candidate gives
-
-```math
-\dot V
-=
--s^T K_R s
--
-\rho\,s^T sat(s/\varepsilon)
-+
-s^T w(t).
-```
-
-Since $s^T sat(s/\varepsilon) \ge 0$,
-
-```math
-\dot V
-\le
--\lambda_{min}(K_R)\|s\|^2
-+
-\|s\|\,\bar w.
-```
-
-Therefore $\dot V < 0$ whenever
-
-```math
-\|s\| > \frac{\bar w}{\lambda_{min}(K_R)}.
-```
-
-This proves ultimate boundedness of the filtered error for bounded
-disturbances. If the robust gain is selected componentwise so that
-$\rho_i \ge \sup_t |w_i(t)|$ outside the boundary layer, then the robust term can
-cancel the worst-case disturbance component and recover a stronger decrease
-condition outside $|s_i| \le \varepsilon$.
-
-The implemented robust controller uses a finite boundary layer, so the expected
-result is practical tracking rather than exact asymptotic convergence under
-sinusoidal disturbance. This matches the experiments: robust adaptive control
-reduces the final filtered error and tracking Lyapunov value compared with
-pure adaptive control.
-
-## Why the Fixed Baseline Fails
-
-Consider the fixed controller with wrong model parameters and no bias estimate:
-
-```math
-\tau
-=
-H_0\ddot q_r + D_0\dot q - K_s s.
-```
-
-The closed-loop filtered dynamics contain uncompensated terms:
-
-```math
-H\dot s
-=
--K_s s
-+
-(H_0-H)\ddot q_r
-+
-(D_0-D)\dot q
-+
-b
-+
-w(t).
-```
-
-Even if $K_s$ is positive, the constant bias and model mismatch act as a
-persistent forcing term. The result is steady-state tracking error or large
-oscillation unless the feedback gain is made large enough to hide the mismatch.
-This is exactly what the plots show: the fixed Lyapunov and PD baselines remain
-well above the adaptive methods under the same disturbance.
-
-## Algorithm Listing
-
-For each controller and each simulation step:
-
-1. Compute the target position $p_T(t)$ and target velocity $\dot p_T(t)$.
-2. Compute obstacle centers $c_j(t)$ unless obstacles are disabled.
-3. Update the desired reference $q_d$, $\dot q_d$, $\ddot q_d$ using the
-   kinematic planner.
-4. Read the plant state $q$, $\dot q$.
-5. Compute $e = q - q_d$ and $\dot e = \dot q - \dot q_d$.
-6. Compute $s = \dot e + \lambda e$.
-7. Compute $\dot q_r = \dot q_d - \lambda e$ and
-   $\ddot q_r = \ddot q_d - \lambda \dot e$.
-8. Compute controller torque:
-   - pure adaptive: $\hat H \ddot q_r + \hat D \dot q - \hat b - K_s s$,
-   - robust adaptive: pure adaptive torque minus
-     $\rho\,sat(s/\varepsilon)$ and with larger $K_R$,
-   - fixed baseline: $H_0 \ddot q_r + D_0 \dot q - K_s s$,
-   - PD baseline: $-K_p e - K_d \dot e$.
-9. Clip torque to actuator bounds.
-10. For adaptive controllers, update $\hat H$, $\hat D$, and $\hat b$.
-11. Integrate the true plant with RK4.
-12. Record state, target error, joint error, sliding norm, torques,
-    disturbance, clearance, saturation, parameter estimates, and Lyapunov
-    quantities.
-13. After rollout, export JSON metrics, CSV time series, plots, and animation.
-
-## Experimental Setup
-
-Default configuration values:
+### Simulation parameters
 
 | Quantity | Value |
 |---|---:|
-| simulation duration | `120 s` |
-| integration step | `0.02 s` |
-| tail metric window | `10 s` |
-| initial joint angles | `[pi, -0.5, 0.7] rad` |
-| target center | `[400, 650] px` |
-| target amplitude | `[120, 110] px` |
-| target angular rate | `1 rad/s` |
-| target success threshold | `30 px` |
-| true inertia | `[18, 10, 5]` |
-| true damping | `[16, 9, 4]` |
-| constant bias | `[25, -20, 10]` |
-| sinusoidal disturbance amplitude | `[9, 8, 4]` |
-| sinusoidal disturbance frequency | `[5, 9, 3]` |
-| torque limits | `[60, 60, 60]` |
-| adaptive $\lambda$ | `2.0` |
-| pure adaptive sliding gain | `[6, 4, 3]` |
-| robust sliding gain | `[12, 8, 6]` |
-| robust $\rho$ | `5.0` |
-| robust $\varepsilon$ | `0.5` |
-| initial inertia estimate | `[5, 3, 2]` |
-| initial damping estimate | `[2, 2, 2]` |
-| initial bias estimate | `[0, 0, 0]` |
-| fixed baseline nominal inertia | `[5, 3, 2]` |
-| fixed baseline nominal damping | `[2, 2, 2]` |
-| PD gains $K_p$ | `[5, 4, 3]` |
-| PD gains $K_d$ | `[2, 1.5, 1]` |
+| integration step `dt` | 0.01 s |
+| RK4 sub-step inside `JointSpacePlant.step` | $\leq 0.5$ ms |
+| total duration | 12.0 s |
+| tail window for metrics | 2.0 s (last 200 samples) |
+| target threshold for success fraction | 10 px end-effector distance |
 
-Obstacle-enabled defaults:
+### Initial conditions
 
-| Obstacle quantity | Value |
-|---|---:|
-| radius | `30 px` |
-| base centers | `[[440,480], [520,750]] px` |
-| amplitudes | `[[8,8], [8,10]] px` |
-| angular rates | `[0.20, 0.25] rad/s` |
-| phases | `[0, 1] rad` |
+| Quantity | Value |
+|---|---|
+| initial joint angles $q(0)$ | $[0.2,\, 0.1,\, -0.2]$ rad |
+| initial joint velocities $\dot q(0)$ | $[0, 0, 0]$ rad/s |
+| initial mass estimates $\hat m(0)$ | $[1.0,\, 0.7,\, 0.6]$ kg |
+| initial damping estimates $\hat D(0)$ | $[0.08,\, 0.06,\, 0.05]$ |
+| initial estimates for Slotine-Li baseline $\hat H(0),\hat D(0), \hat b(0)$ | $[1.2,\, 0.8,\, 0.45],\ [0.08,\, 0.06,\, 0.05],\ [0,0,0]$ |
 
-## Reproducibility
+### Reference trajectory
 
-Install dependencies:
+| Quantity | Value |
+|---|---|
+| centre of requested ellipse | $(60, 0)$ px |
+| requested semi-axes $(a_x, a_y)$ | $(165, 45)$ px |
+| angular rate $\omega$ | $0.7$ rad/s |
+| ellipse orientation | $0$ rad |
+| elbow sign | $+1$ |
+| workspace margin | $2$ px |
+| derivative step for IK differentiation | $10^{-4}$ s |
+
+The requested ellipse is automatically scaled by the maximum sampled factor $s \in (0, 1]$ for which the whole ellipse is reachable. With the configured link lengths and elbow sign, $s < 1$, and the reachable ellipse fits well inside the workspace.
+
+### Controller gains
+
+| Controller | Parameter | Value |
+|---|---|---:|
+| `BacksteppingFull`, `BacksteppingSimplified` | $K_1$ | $\mathrm{diag}(10, 10, 10)$ |
+| `BacksteppingFull`, `BacksteppingSimplified` | $K_2$ | $\mathrm{diag}(10, 10, 10)$ |
+| `BacksteppingFull`, `BacksteppingSimplified` | assumed link masses | $[1.0,\, 0.7,\, 0.6]$ kg |
+| `AdaptiveSimplifiedController` | $K_1, K_2$ | inherited, $\mathrm{diag}(10, 10, 10)$ |
+| `AdaptiveSimplifiedController` | $\Gamma_m$ | $\mathrm{diag}(0.08, 0.08, 0.08)$ |
+| `AdaptiveSimplifiedController` | $\Gamma_D$ | $\mathrm{diag}(0.5, 0.5, 0.5)$ |
+| `AdaptiveSimplifiedController` | mass bounds | $[0.05,\, 3.0]$ kg |
+| `AdaptiveSimplifiedController` | damping bounds | $[0.0,\, 2.0]$ |
+| `AdaptiveLyapunovController` | $\lambda$ | $6.0$ |
+| `AdaptiveLyapunovController` | sliding gain $K_s$ | $\mathrm{diag}(18, 16, 12)$ |
+| `AdaptiveLyapunovController` | $\Gamma_{\text{inertia}},\Gamma_{\text{damping}},\Gamma_{\text{bias}}$ | $\mathrm{diag}(0.8),\mathrm{diag}(0.5),\mathrm{diag}(0.4)$ |
+| All | torque limits | $[80, 60, 40]$ Nm |
+
+All numerical values are read from `configs/default.json` and (for compatibility with direct Python use) reproduced by `default_config()` in `src/config.py`.
+
+### Scenarios
+
+| Scenario | What the controllers assume | What the plant uses |
+|---|---|---|
+| nominal | masses $= [1.0,\, 0.7,\, 0.6]$ kg | masses $= [1.0,\, 0.7,\, 0.6]$ kg |
+| payload | masses $= [1.0,\, 0.7,\, 0.6]$ kg | masses $= [1.0,\, 0.7,\, \mathbf{1.8}]$ kg, third-link inertia $\times 3$ |
+
+The third link is the only one whose mass and inertia are scaled (by `PAYLOAD_MULTIPLIER = 3.0` in the config). All other parameters, including damping and torque limits, remain identical between the two scenarios.
+
+No external disturbance torque $w(t)$ is injected in either scenario (`disturbance_amplitude = 0`). Model mismatch between controller and plant is the only source of imperfection.
+
+## 7. Reproducibility
+
+### Install
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Run a quick smoke test:
+The dependency set is small: `numpy`, `scipy`, `matplotlib`, `pillow`.
 
-```bash
-python main.py --duration 5 --no-plots --no-animation
-```
-
-Run the pure adaptive comparison with moving obstacles enabled:
+### Reproduce the full comparison
 
 ```bash
 python main.py
 ```
 
-Run the robust adaptive comparison with moving obstacles enabled:
+This runs all four controllers in both the nominal and payload scenarios, writes the per-scenario CSVs, PNGs, and per-controller GIFs, and prints a summary line per controller. Expected runtime on a single CPU core: about 1–2 minutes per scenario.
+
+### Run a single controller or a single scenario
 
 ```bash
-python main.py --robust
+# Only the full backstepping controller, only the nominal scenario
+python main.py --controller backstepping_full --nominal-only
+
+# All four controllers, only the payload scenario
+python main.py --payload
+
+# Single adaptive simplified, both scenarios
+python main.py --controller adaptive_simp
 ```
 
-Run without GIF generation:
+Available `--controller` values: `adaptive`, `adaptive_simp`, `backstepping_full`, `backstepping_simp`, `all` (default).
+
+### Reproduce the standalone backstepping demo
 
 ```bash
-python main.py --no-animation
-python main.py --robust --no-animation
+python -m ppo.backstepping_tracking
 ```
 
-Reproduce the committed pure and robust artifact folders, which isolate
-disturbance rejection by disabling obstacles:
+This runs the earlier numba-accelerated full-physics demo on the same elliptical reference. Outputs land in `figures/backstepping_tracking/`, `animations/backstepping_tracking/`, `data/backstepping_tracking/`.
+
+### Reproduce the simplified-model standalone demo
 
 ```bash
-python main.py --no-obstacles
-mkdir -p figures/figures_pure
-cp figures/*.png figures/summary_metrics.json figures/rollout_timeseries.csv figures/figures_pure/
-cp animations/adaptive_manipulator.gif animations/adaptive_manipulator_pure.gif
-
-python main.py --robust --no-obstacles
-mkdir -p figures/figures_robust
-cp figures/*.png figures/summary_metrics.json figures/rollout_timeseries.csv figures/figures_robust/
-cp animations/adaptive_manipulator.gif animations/adaptive_manipulator_robust.gif
+python simplified_backstepping_demo.py
 ```
 
-Produced outputs:
+This script uses `scipy.integrate.solve_ivp` with the simplified plant $M_{\text{diag}}\ddot q + G(q) = \tau$ ($C = 0$) and the simplified backstepping torque law $\tau = M_{\text{diag}}(\dot\alpha - z_1 - K_2 z_2) + G(q)$. It is useful as a sanity check on the methodology in isolation. Outputs land in `figures/simplified_backstepping/`, `animations/simplified_backstepping/`, `data/simplified_backstepping/`.
 
-| Output | Description |
+### Produced outputs
+
+| Path | What it contains |
 |---|---|
-| `summary_metrics.json` | final, mean, tail, Lyapunov, torque, saturation, and parameter metrics |
-| `rollout_timeseries.csv` | synchronized samples for all controllers |
-| `workspace_trajectories.png` | target path, end-effector paths, and final arm poses |
-| `tracking_errors.png` | target error and desired-joint-trajectory tracking error |
-| `lyapunov_values.png` | augmented adaptive Lyapunov and comparable tracking energy |
-| `adaptive_parameter_estimates.png` | online estimates of inertia, damping, and bias |
-| `control_and_clearance.png` | torques and minimum clearance |
-| `adaptive_manipulator*.gif` | animation of arm motion, target, trajectories, and tracking Lyapunov values |
+| `figures/comparison/{scenario}/workspace_trajectories.png` | reachable ellipse, end-effector path of the first rollout, final arm poses of all four controllers |
+| `figures/comparison/{scenario}/tracking_errors.png` | end-effector target error and joint tracking-error norm for all controllers |
+| `figures/comparison/{scenario}/joint_tracking_errors_z1.png` | per-joint $z_1$ traces for all controllers |
+| `figures/comparison/{scenario}/lyapunov_values.png` | augmented $V_a$ for adaptive controllers (log scale) and $V_e$ for all controllers |
+| `figures/comparison/{scenario}/adaptive_parameter_estimates.png` | Slotine-Li parameter traces |
+| `figures/comparison/{scenario}/adaptive_simp_parameter_estimates.png` | adaptive backstepping mass, damping, inertia traces |
+| `figures/comparison/{scenario}/control_and_clearance.png` | torques and minimum clearance signal |
+| `animations/comparison/{scenario}/{controller}.gif` | per-controller scene animation |
+| `data/comparison/{scenario}/rollouts.csv` | time-aligned per-controller samples (q, $\dot q$, $q_d$, $\tau$, estimates, errors, Lyapunov) |
+| `data/comparison/{scenario}/summary.csv` | aggregate metrics per controller |
 
-## Result Summary
+Each scenario in `{nominal, payload}` produces the same file set.
 
-The archived comparison uses the same uncertain plant and disturbance for all
-controllers. The robust adaptive controller improves the main adaptive-control
-experiment, while the fixed Lyapunov and PD baselines remain weak under the
-same uncertainty.
+## 8. Results: Nominal Scenario
 
-Adaptive-controller slot comparison:
+Plots in this section come from `figures/comparison/nominal/`.
 
-| Metric | Pure adaptive | Robust adaptive |
-|---|---:|---:|
-| final target error | `52.928 px` | `26.821 px` |
-| tail mean target error | `26.484 px` | `23.625 px` |
-| tail success fraction | `0.622` | `0.712` |
-| final joint error norm | `0.630 rad` | `0.142 rad` |
-| tail mean joint error norm | `0.646 rad` | `0.155 rad` |
-| final sliding norm | `1.422` | `0.498` |
-| tail mean sliding norm | `1.309` | `0.343` |
-| final tracking Lyapunov $V_e$ | `0.300` | `0.047` |
-| RMS torque | `29.236` | `30.268` |
-| saturation fraction | `0.016` | `0.004` |
-| collision count in archived no-obstacle run | `0` | `0` |
+![Nominal workspace trajectories](figures/comparison/nominal/workspace_trajectories.png)
 
-Baseline comparison from the same archived summaries:
+**Figure 1.** Workspace view for the nominal run. The orange ellipse is the reachable desired path. The green curve is the end-effector path of the `adaptive` controller (rendered first; see Limitations). The final arm poses of all four controllers are drawn as connected dots at the end of the trajectory. The `adaptive` controller's end-effector wanders far from the ellipse; the backstepping variants and `adaptive_simp` converge to poses near the ellipse.
 
-| Controller | Tail mean target error | Tail success fraction | Final $V_e$ |
-|---|---:|---:|---:|
-| pure adaptive | `26.484 px` | `0.622` | `0.300` |
-| robust adaptive | `23.625 px` | `0.712` | `0.047` |
-| fixed Lyapunov | `124.136 px` | `0.000` | `4.150` |
-| plain PD | `152.020 px` | `0.044` | `12.456` |
+![Nominal joint tracking errors](figures/comparison/nominal/joint_tracking_errors_z1.png)
 
-Main conclusions:
+**Figure 2.** Per-joint position error $z_1$ over time. `backstepping_full` (dark blue) and `backstepping_simp` (purple) reach the $10^{-2}$ rad band after ~4 s and stay there. `adaptive_simp` (light green) settles to a small residual error per joint. `adaptive` (dark green) shows large persistent oscillations on all three joints — its model assumptions are violated by the true plant.
 
-- Both adaptive methods substantially outperform the non-adaptive baselines.
-- The robust adaptive term reduces the final sliding norm and tracking
-  Lyapunov value under the sinusoidal disturbance.
-- The fixed Lyapunov baseline cannot remove steady error caused by wrong model
-  parameters and missing bias compensation.
-- The PD baseline lacks model compensation and performs worst in the final
-  tracking energy.
-- The pure adaptive formal asymptotic proof does not cover the sinusoidal
-  disturbance; the robust result should be interpreted as practical bounded
-  disturbance rejection.
+![Nominal Lyapunov values](figures/comparison/nominal/lyapunov_values.png)
 
-## Pure Adaptive Figures
+**Figure 3.** Top panel: augmented Lyapunov candidate $V_a$ for `adaptive`. $V_a$ starts at 0 (matching initial estimates) and grows to $\approx 10^3$ — the candidate cannot decrease because the underlying plant model is wrong, so the proof's assumptions do not apply. Bottom panel: tracking-energy $V_e$ for all four controllers. Both backstepping variants drive $V_e$ to nearly zero; `adaptive_simp` after a transient settles to $V_e \approx 5$; `adaptive` stays at $V_e \approx 300$–$400$ throughout.
 
-![Pure workspace trajectories](figures/figures_pure/workspace_trajectories.png)
+![Nominal adaptive (Slotine-Li) parameter estimates](figures/comparison/nominal/adaptive_parameter_estimates.png)
 
-Figure 1. Pure adaptive run workspace trajectories. The orange curve is the
-moving target. The green end-effector path is the pure adaptive controller,
-while red and purple are the fixed Lyapunov and PD baselines. The pure adaptive
-controller follows the target path much more closely than the baselines.
+**Figure 4.** Parameter traces of the `adaptive` controller. Inertia estimates $\hat H$ saturate at the upper configured bound $[8, 8, 8]$, damping $\hat D$ stays near zero, and bias $\hat b$ drifts to large negative values. The estimates have no physical interpretation here because they are fitted to the wrong plant model.
 
-![Pure tracking errors](figures/figures_pure/tracking_errors.png)
+![Nominal adaptive backstepping parameter estimates](figures/comparison/nominal/adaptive_simp_parameter_estimates.png)
 
-Figure 2. Pure adaptive target error and joint trajectory tracking error. The
-fixed and PD baselines show large persistent error under the same model
-mismatch and disturbance.
+**Figure 5.** Parameter traces of `adaptive_simp`. Mass estimates initially saturate at the upper bound (3.0 kg) during the high-acceleration startup transient, then drift down towards the true values $[1.0, 0.7, 0.6]$ as the trajectory settles, without ever fully converging — persistent excitation is not provided by the elliptical reference.
 
-![Pure Lyapunov values](figures/figures_pure/lyapunov_values.png)
+![Nominal torques and clearance](figures/comparison/nominal/control_and_clearance.png)
 
-Figure 3. Pure adaptive Lyapunov values. The augmented adaptive Lyapunov
-quantity records the proof-oriented energy for the adaptive controller, while
-the tracking energy $V_e$ gives a comparable error measure across controllers.
+**Figure 6.** Control torques of the `adaptive` controller (top) and minimum link-obstacle clearance (bottom, sentinel value since no obstacles are present).
 
-![Pure adaptive parameter estimates](figures/figures_pure/adaptive_parameter_estimates.png)
+### Interpretation of the nominal scenario
 
-Figure 4. Pure adaptive parameter estimates. The estimates are projected into
-configured bounds. Exact physical-parameter convergence is not required for
-tracking and is not guaranteed without persistent excitation.
+- `backstepping_full` achieves the cleanest tracking with low RMS torque (7.3 Nm). The full feedforward exactly cancels $M, C, G$, leaving only the small-gain feedback to handle the initial transient.
+- `backstepping_simp` is marginally better in tail mean error because it uses lower-amplitude torques for the same gains — at $\omega = 0.7$ rad/s the missing Coriolis term is small and the slight loss of accuracy is compensated by tighter feedback action.
+- `adaptive_simp` performs respectably but has a long transient (the mass adaptation has to settle before the controller can track well). At the configured $\Gamma_m$ it converges to a useful operating regime within ~4 s.
+- `adaptive` (Slotine-Li, Project 2 controller) is unable to track even in this nominal scenario, demonstrating the importance of matching the controller's model class to the plant.
 
-![Pure control and clearance](figures/figures_pure/control_and_clearance.png)
+## 9. Results: Payload Scenario
 
-Figure 5. Pure adaptive torques and clearance signal. The archived comparison
-was generated with obstacles disabled, so clearance is the no-obstacle sentinel.
-Torque saturation is limited but nonzero, which is one reason the discrete
-simulation does not exactly reproduce the continuous-time Lyapunov equality.
+Plots in this section come from `figures/comparison/payload/`. The real third-link mass and inertia are tripled; the controllers continue to use the nominal values.
 
-## Robust Adaptive Figures
+![Payload workspace trajectories](figures/comparison/payload/workspace_trajectories.png)
 
-![Robust workspace trajectories](figures/figures_robust/workspace_trajectories.png)
+**Figure 7.** Workspace view for the payload run. The end-effector trace of the first rollout (here `adaptive`) wanders even further than in the nominal case. The final arm poses of the backstepping controllers drift away from the ellipse because their feedforward is now significantly wrong on the third link.
 
-Figure 6. Robust adaptive run workspace trajectories. The robust controller
-follows the target path more tightly than the pure adaptive run and much more
-tightly than the baselines.
+![Payload joint tracking errors](figures/comparison/payload/joint_tracking_errors_z1.png)
 
-![Robust tracking errors](figures/figures_robust/tracking_errors.png)
+**Figure 8.** Per-joint position error $z_1$. `adaptive_simp` (light green) is the only controller whose error per joint settles below $\approx 0.2$ rad. Both backstepping variants stay at errors of order $1$ rad on the third joint, and `adaptive` is at the same large amplitude as in the nominal scenario.
 
-Figure 7. Robust adaptive tracking errors. The robust boundary-layer term
-reduces the final joint tracking error and sliding norm relative to the pure
-adaptive run.
+![Payload Lyapunov values](figures/comparison/payload/lyapunov_values.png)
 
-![Robust Lyapunov values](figures/figures_robust/lyapunov_values.png)
+**Figure 9.** Top panel: augmented $V_a$ for `adaptive` (now starting at $V_a \approx 0.5$ because the initial mass estimate differs from the true tripled mass) stays in the $10^2$–$10^3$ band — adaptation cannot help because the model class is wrong. Bottom panel: tracking-energy $V_e$. Only `adaptive_simp` decays to a small value ($\approx 7$) over the run. Both backstepping variants stabilise at $V_e \approx 100$, an order of magnitude above their nominal value.
 
-Figure 8. Robust adaptive Lyapunov-style values. The augmented candidate drops
-from `384.24` to `60.97`; the comparable tracking energy $V_e$ ends at `0.047`
-for robust adaptive control versus `4.150` for the fixed baseline and `12.456`
-for PD.
+![Payload adaptive (Slotine-Li) parameter estimates](figures/comparison/payload/adaptive_parameter_estimates.png)
 
-![Robust adaptive parameter estimates](figures/figures_robust/adaptive_parameter_estimates.png)
+**Figure 10.** Slotine-Li parameter traces in payload. The shape of the traces is essentially unchanged from the nominal scenario because the controller does not see the payload as a parameter it can adapt — its model has scalar $(H, D, b)$, not link-mass parameters.
 
-Figure 9. Robust adaptive parameter estimates. The robust controller uses the
-same adaptive laws as the pure adaptive controller, but the sliding-mode term
-changes the closed-loop trajectory and therefore changes the estimates.
+![Payload adaptive backstepping parameter estimates](figures/comparison/payload/adaptive_simp_parameter_estimates.png)
 
-![Robust control and clearance](figures/figures_robust/control_and_clearance.png)
+**Figure 11.** Adaptive backstepping parameter traces in payload. The third-link mass estimate (green) drops below the second-link estimate by the end of the run, reflecting the fact that the gravity regressor cannot disentangle the masses without persistent excitation. Nevertheless tracking succeeds, because the regressor-based control law cancels the gravity error in the direction that actually appears at the end-effector.
 
-Figure 10. Robust adaptive torques and clearance signal. The robust controller
-uses slightly higher RMS torque than pure adaptive control, but it obtains
-better final tracking and lower saturation fraction in the archived run.
+![Payload torques and clearance](figures/comparison/payload/control_and_clearance.png)
 
-## Animation Interpretation
+**Figure 12.** Control torques and clearance. The third joint's torque is visibly larger in payload than in nominal, consistent with the additional gravity load. No torque-limit saturation events are recorded for the backstepping controllers in this run.
 
-The GIFs show the arm configuration, end-effector traces, moving target, and a
-side panel with normalized tracking Lyapunov values. The pure animation shows
-that adaptation alone can substantially outperform fixed and PD baselines. The
-robust animation shows the added boundary-layer term reducing oscillatory
-tracking error under the same disturbed plant.
+### Interpretation of the payload scenario
 
-The animations are not decorative: they expose the actual closed-loop behavior,
-the current simulation time, the target path, the response of each controller,
-and how the tracking energy evolves.
+- `backstepping_full` and `backstepping_simp` fail because the feedforward they apply uses the nominal $G(q)$ and $M(q)$, while the true plant has a third-link gravity contribution roughly three times larger. The controllers commit a constant feedforward error proportional to the mass mismatch, which the feedback gains $K_1, K_2 = 10$ cannot fully cancel given the actuator limits.
+- `adaptive_simp` survives because its gravity regressor explicitly identifies the direction in which the model is wrong (the column of $Y_g(q)$ corresponding to $m_3$) and adapts the mass estimate to cancel that direction. The actual mass estimate does not converge to 1.8 kg — it cannot, due to the lack of persistent excitation — but it shifts enough to make the controlled gravity term close to the real one along the trajectory.
+- `adaptive` fails for the same structural reason as in nominal, with no qualitative change.
 
-## Notation and Code Mapping
+## 10. Comparison Discussion
 
-| Symbol in README | Meaning | Code signal |
+The mandatory Project 2+ comparison (§10 of the course requirements) is structured as four controllers × two scenarios. The failure modes observed are summarised below.
+
+| Controller | Nominal scenario | Payload scenario |
 |---|---|---|
-| $q_d$, $\dot q_d$, $\ddot q_d$ | generated desired joint trajectory | `ReferenceState.q`, `ReferenceState.dq`, `ReferenceState.ddq` |
-| $e$, $\dot e$ | joint tracking error and velocity error | `ControlInfo.q_error`, `ControlInfo.dq_error` |
-| $s$ | filtered/sliding tracking error | `ControlInfo.sliding_error` |
-| $\dot q_r$, $\ddot q_r$ | filtered reference signals | `ControlInfo.dq_r`, `ControlInfo.ddq_r` |
-| $\hat H$, $\hat D$, $\hat b$ | adaptive estimates | `ControlInfo.inertia_hat`, `damping_hat`, `bias_hat` |
-| $V$ | augmented adaptive Lyapunov candidate | `Rollout.augmented_lyapunov` |
-| $V_e$ | comparable tracking energy | `Rollout.tracking_lyapunov` |
-| $\tau$ | clipped torque applied to plant | `Rollout.tau` |
-| $\tau_{raw}$ | commanded torque before clipping | `Rollout.tau_raw` |
+| `backstepping_full` | works: tail $\|z_1\| \approx 0.011$ rad, 100 % success | **fails: steady-state tracking error** of order 1 rad on joint 3; wrong feedforward direction |
+| `backstepping_simp` | works: tail $\|z_1\| \approx 0.008$ rad, 100 % success | **fails: similar to `backstepping_full`**, slightly worse because missing Coriolis term also matters more |
+| `adaptive_simp` | works after transient: tail $\|z_1\| \approx 0.30$ rad, 42 % success | **works: tail $\|z_1\| \approx 0.20$ rad, 77 % success — the only controller that survives** |
+| `adaptive` | **fails: persistent oscillations**, $V_e \approx 400$, parameter estimates drift to bounds | fails identically — wrong plant model in both cases |
 
-## Limitations
+The comparison demonstrates three distinct lessons that match the course's stated useful failure modes (§10 of the requirements):
 
-- The plant is a diagonal joint-space model, not a full manipulator
-  $M(q), C(q,\dot q), G(q)$ rigid-body model.
-- The obstacle-aware reference generator is heuristic artificial potential
-  fields plus damped least squares, not a control-barrier-function proof.
-- The pure adaptive convergence proof assumes $w(t)=0$; the current disturbance
-  stress test includes sinusoidal torque components.
-- The robust proof gives practical boundedness under bounded disturbances, not
-  exact asymptotic convergence inside the boundary layer.
-- The continuous-time proofs assume no torque saturation, while the simulation
-  clips torque and records saturation.
-- Parameter convergence is not guaranteed without persistent excitation.
-- No sensor noise, delays, or actuator dynamics are simulated.
+1. **Slow convergence / poor tracking from wrong model class.** The Slotine-Li controller designed for a diagonal joint-space plant cannot track on a full-physics manipulator no matter the scenario. This is a *wrong-tool* failure: the adaptation laws are correct for their model class, but the model class does not contain the true plant.
+2. **Steady-state error under uncertainty.** The two non-adaptive backstepping controllers, while excellent under nominal conditions, fail to reject a structural parameter mismatch (the payload). They commit a feedforward error that the feedback gains cannot fully cancel within actuator limits.
+3. **Recovery via adaptation with the correct regressor structure.** The adaptive-backstepping controller `adaptive_simp` uses the gravity regressor $Y_g(q)$ to explicitly capture the direction in which the model can be wrong. Tracking is restored asymptotically even when neither $\hat m$ nor $\tilde m$ separately converges to a clean value — what matters is that $Y_g(q)\hat m \to G(q,m)$ along the trajectory.
 
-## Submission Checklist Alignment
+A simpler comparison reading is also valid: backstepping is best when the model is exact; adaptive backstepping is best when it is not.
 
-The repository contains the required `README.md`, `src/`, `figures/`,
-`animations/`, and `configs/` folders. The README defines the problem, plant,
-state, input, constraints, unknown parameters, dynamics, method, proofs,
-algorithm, setup, commands, outputs, plots, animations, comparisons, and
-limitations. The fixed Lyapunov and PD baselines provide the mandatory
-Project 2 comparison against weaker alternatives.
+## 11. Limitations
 
-## AI Usage
+The following limitations are honest about what the implementation does and does not provide, in line with §13 of the course requirements.
 
-AI tools were used as engineering assistance during implementation and
-documentation, including code editing support, README drafting, and wording
-refinement. The control design, mathematical derivations, experiment setup,
-result verification, and final technical content were reviewed and validated
-against the actual code and generated artifacts in this repository.
+- **Simplified Lyapunov form.** Section 4.1 uses $V = \tfrac{1}{2}(\|z_1\|^2 + \|z_2\|^2)$ instead of the canonical $V = \tfrac{1}{2}\|z_1\|^2 + \tfrac{1}{2}z_2^\top M z_2$. The closed-loop conclusion is the same, but the simplified form does not exploit the skew-symmetry of $\dot M - 2C$ and therefore does not generalise as cleanly to settings where $M$ is configuration-dependent and changing rapidly.
+- **No persistent excitation.** The elliptical reference is too regular to yield persistent excitation in the gravity regressor. The mass estimates of `adaptive_simp` therefore stay bounded but do not converge to the true masses. Tracking is asymptotic, identification is not.
+- **`workspace_trajectories.png` shows only one EE path.** The current implementation of `_save_workspace` in `src/visualisation.py` draws the end-effector trace of the *first* rollout in the dictionary order and only the final arm poses of the others. Comparing EE paths across controllers therefore requires `joint_tracking_errors_z1.png` and the per-controller GIFs.
+- **Torque saturation is not modelled in the proof.** The simulator clips torques to actuator bounds before integration, but Section 4.1 assumes unsaturated control. In the runs reported here no saturation events occur for the backstepping controllers; for the Slotine-Li controller saturation is frequent (see `saturation_fraction` in `summary.csv`), which contributes to its failure.
+- **No sensor noise, no delay, no actuator dynamics.** All signals are exact. Adding noise or first-order actuator dynamics is a natural next step and is expected to mostly affect the adaptation gains, not the conclusions.
+- **Gravity-only regressor.** The implementation linearises $G(q,m)$ in the link masses but does not similarly linearise $M(q)$ in $m$. A full mass-regressor parametrisation would also adapt the inertia matrix; this is left for future work.
+- **The Slotine-Li controller is structurally mismatched.** It is included as a deliberate negative baseline; its results should not be interpreted as a fair benchmark of adaptive control in general.
+
+## 12. AI Usage
+
+Parts of the README structure and prose, as well as the cross-checks between code and equations, were drafted with the help of an AI assistant. All mathematical claims have been verified against the code; all numerical values in the result tables are taken directly from `data/comparison/*/summary.csv` produced by the included scripts.

@@ -1,4 +1,4 @@
-"""Root launcher for the from-scratch adaptive manipulator project."""
+"""Root launcher for the Project 3 four-way controller comparison."""
 
 from src.main import main
 
