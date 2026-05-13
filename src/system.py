@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from config import DynamicsConfig, ObstacleConfig, RobotConfig
+from .config import DynamicsConfig, ObstacleConfig, RobotConfig
 
 
 @dataclass(frozen=True)

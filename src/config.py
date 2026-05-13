@@ -83,20 +83,6 @@ class AdaptiveControllerConfig:
 
 
 @dataclass(frozen=True)
-class FixedLyapunovControllerConfig:
-    lambda_gain: float
-    sliding_gain: np.ndarray
-    nominal_inertia: np.ndarray
-    nominal_damping: np.ndarray
-
-
-@dataclass(frozen=True)
-class PDControllerConfig:
-    kp: np.ndarray
-    kd: np.ndarray
-
-
-@dataclass(frozen=True)
 class BacksteppingControllerConfig:
     k1: np.ndarray
     k2: np.ndarray
@@ -121,6 +107,7 @@ class SimulationConfig:
 class OutputConfig:
     figures_dir: str
     animations_dir: str
+    data_dir: str
 
 
 @dataclass(frozen=True)
@@ -131,8 +118,6 @@ class ProjectConfig:
     obstacles: ObstacleConfig
     planner: PlannerConfig
     adaptive_controller: AdaptiveControllerConfig
-    fixed_lyapunov_controller: FixedLyapunovControllerConfig
-    pd_controller: PDControllerConfig
     backstepping_controller: BacksteppingControllerConfig
     controller_selection: ControllerSelectionConfig
     simulation: SimulationConfig
@@ -173,8 +158,8 @@ def load_config(path: str | Path) -> ProjectConfig:
         ),
         obstacles=ObstacleConfig(
             radius=float(raw["obstacles"]["radius"]),
-            base_centers=_array(raw["obstacles"]["base_centers"]),
-            amplitudes=_array(raw["obstacles"]["amplitudes"]),
+            base_centers=_reshape_obstacles(raw["obstacles"]["base_centers"]),
+            amplitudes=_reshape_obstacles(raw["obstacles"]["amplitudes"]),
             omegas=_array(raw["obstacles"]["omegas"]),
             phases=_array(raw["obstacles"]["phases"]),
         ),
@@ -200,16 +185,6 @@ def load_config(path: str | Path) -> ProjectConfig:
             bias_bounds=_bounds(raw["adaptive_controller"].get("bias_bounds", [-100.0, 100.0])),
             mass_bounds=_bounds(raw["adaptive_controller"].get("mass_bounds", [0.05, 10.0])),
         ),
-        fixed_lyapunov_controller=FixedLyapunovControllerConfig(
-            lambda_gain=float(raw["fixed_lyapunov_controller"]["lambda_gain"]),
-            sliding_gain=_array(raw["fixed_lyapunov_controller"]["sliding_gain"]),
-            nominal_inertia=_array(raw["fixed_lyapunov_controller"]["nominal_inertia"]),
-            nominal_damping=_array(raw["fixed_lyapunov_controller"]["nominal_damping"]),
-        ),
-        pd_controller=PDControllerConfig(
-            kp=_array(raw["pd_controller"]["kp"]),
-            kd=_array(raw["pd_controller"]["kd"]),
-        ),
         backstepping_controller=BacksteppingControllerConfig(
             k1=_array(raw.get("backstepping_controller", {}).get("k1", [10.0] * n_joints)),
             k2=_array(raw.get("backstepping_controller", {}).get("k2", [10.0] * n_joints)),
@@ -234,7 +209,11 @@ def load_config(path: str | Path) -> ProjectConfig:
             duration=float(raw["simulation"]["duration"]),
             tail_window_seconds=float(raw["simulation"]["tail_window_seconds"]),
         ),
-        output=OutputConfig(**raw["output"]),
+        output=OutputConfig(
+            figures_dir=raw["output"]["figures_dir"],
+            animations_dir=raw["output"]["animations_dir"],
+            data_dir=raw["output"].get("data_dir", "data"),
+        ),
     )
 
 
@@ -303,16 +282,6 @@ def default_config() -> ProjectConfig:
             bias_bounds=(-100.0, 100.0),
             mass_bounds=(0.05, 3.0),
         ),
-        fixed_lyapunov_controller=FixedLyapunovControllerConfig(
-            lambda_gain=6.0,
-            sliding_gain=np.array([18.0, 16.0, 12.0], dtype=float),
-            nominal_inertia=inertia.copy(),
-            nominal_damping=damping.copy(),
-        ),
-        pd_controller=PDControllerConfig(
-            kp=np.array([20.0, 18.0, 14.0], dtype=float),
-            kd=np.array([6.0, 5.0, 4.0], dtype=float),
-        ),
         backstepping_controller=BacksteppingControllerConfig(
             k1=np.array([10.0, 10.0, 10.0], dtype=float),
             k2=np.array([10.0, 10.0, 10.0], dtype=float),
@@ -329,8 +298,9 @@ def default_config() -> ProjectConfig:
             tail_window_seconds=2.0,
         ),
         output=OutputConfig(
-            figures_dir="outputs/comparison/figures",
-            animations_dir="outputs/comparison/animations",
+            figures_dir="figures",
+            animations_dir="animations",
+            data_dir="data",
         ),
     )
 
@@ -343,3 +313,11 @@ def _bounds(values: Any) -> tuple[float, float]:
     if len(values) != 2:
         raise ValueError(f"Expected two bounds, got {values!r}")
     return float(values[0]), float(values[1])
+
+def _reshape_obstacles(values: Any) -> np.ndarray:
+    arr = _array(values)
+    if arr.size == 0:
+        return np.zeros((0, 2), dtype=float)
+    if arr.ndim == 1:
+        return arr.reshape(-1, 2)
+    return arr

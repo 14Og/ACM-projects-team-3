@@ -34,7 +34,9 @@ K2 = np.diag([10.0, 10.0, 10.0])
 T_START = 0.0
 T_END = 12.0
 N_SAMPLES = 2000
-OUTPUT_DIR = Path("outputs/simplified_backstepping")
+OUTPUT_DIR = Path("figures/simplified_backstepping")
+ANIMATIONS_DIR = Path("animations/simplified_backstepping")
+DATA_DIR = Path("data/simplified_backstepping")
 SAVE_GIF = True
 GIF_FPS = 30
 
@@ -393,7 +395,7 @@ def animate_results(log: dict[str, np.ndarray]) -> None:
     if not SAVE_GIF:
         return
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    ANIMATIONS_DIR.mkdir(parents=True, exist_ok=True)
 
     t = log["time"]
     q = log["q"]
@@ -434,24 +436,24 @@ def animate_results(log: dict[str, np.ndarray]) -> None:
         return trace_line, desired_arm, actual_arm, time_text
 
     anim = FuncAnimation(fig, update, frames=frames, interval=1000 / GIF_FPS, blit=True)
-    gif_path = OUTPUT_DIR / "simplified_tracking.gif"
+    gif_path = ANIMATIONS_DIR / "simplified_tracking.gif"
     anim.save(gif_path, writer=PillowWriter(fps=GIF_FPS))
     plt.close(fig)
 
 
 def main() -> None:
     log = simulate()
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    np.savez(OUTPUT_DIR / "simulation_log.npz", **log)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    np.savez(DATA_DIR / "simulation_log.npz", **log)
     try:
         animate_results(log)
     except Exception as exc:
         print(f"GIF was not saved: {exc}")
     plot_results(log)
 
-    print(f"Saved results to {OUTPUT_DIR}")
+    print(f"Saved results to {DATA_DIR}")
     if SAVE_GIF:
-        print(f"GIF path: {OUTPUT_DIR / 'simplified_tracking.gif'}")
+        print(f"GIF path: {ANIMATIONS_DIR / 'simplified_tracking.gif'}")
     print(f"Ellipse workspace scale = {ELLIPSE_SCALE:.3f}")
     print(f"Final ||z1|| = {np.linalg.norm(log['z1'][-1]):.6f}")
     print(f"Max nominal V_dot = {np.max(log['V_dot_nominal']):.6e}")

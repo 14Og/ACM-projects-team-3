@@ -9,9 +9,9 @@ from typing import Protocol
 
 import numpy as np
 
-from config import DynamicsConfig, ProjectConfig
-from controller import ObstacleAwareReferenceGenerator
-from system import JointSpacePlant, MovingObstacles, PlanarArm
+from .config import DynamicsConfig, ProjectConfig
+from .controller import ObstacleAwareReferenceGenerator
+from .system import JointSpacePlant, MovingObstacles, PlanarArm
 
 
 class Controller(Protocol):

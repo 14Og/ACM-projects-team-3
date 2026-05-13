@@ -9,18 +9,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Circle
 
-from config import DynamicsConfig, ProjectConfig
-from simulation import Rollout
-from system import PlanarArm
+from .config import DynamicsConfig, ProjectConfig
+from .simulation import Rollout
+from .system import PlanarArm
 
 
 COLORS = {
     "adaptive": "#087F5B",
-    "fixed_lyapunov": "#C92A2A",
-    "plain_pd": "#5F3DC4",
     "reference": "#1C7ED6",
     "target": "#F08C00",
-    "robust": "#E67700",
     "backstepping_full": "#1864AB",
     "backstepping_simp": "#9C36B5",
     "adaptive_simp": "#2F9E44",

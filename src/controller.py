@@ -6,16 +6,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from config import (
+from .config import (
     AdaptiveControllerConfig,
     BacksteppingControllerConfig,
-    FixedLyapunovControllerConfig,
-    PDControllerConfig,
     PlannerConfig,
     RobotConfig,
     TargetConfig,
 )
-from system import MovingObstacles, PlanarArm, angle_error, manipulator_terms, wrap_angles
+from .system import MovingObstacles, PlanarArm, angle_error, manipulator_terms, wrap_angles
 
 
 @dataclass(frozen=True)
@@ -406,108 +404,6 @@ class BacksteppingSimplified:
             mass_hat=self.assumed_masses,
         )
 
-
-class FixedLyapunovController:
-    """Same filtered-error law as adaptive control, but with fixed wrong parameters."""
-
-    name = "fixed_lyapunov"
-
-    def __init__(self, cfg: FixedLyapunovControllerConfig, torque_limits: np.ndarray) -> None:
-        self.cfg = cfg
-        self.torque_limits = np.asarray(torque_limits, dtype=float)
-
-    def reset(self) -> None:
-        return None
-
-    def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
-        del dt
-        q_error, dq_error, sliding, dq_r, ddq_r = _filtered_errors(
-            q,
-            dq,
-            ref,
-            self.cfg.lambda_gain,
-        )
-        tau_raw = self.cfg.nominal_inertia * ddq_r + self.cfg.nominal_damping * dq
-        tau_raw = tau_raw - self.cfg.sliding_gain * sliding
-        tau = np.clip(tau_raw, -self.torque_limits, self.torque_limits)
-        return ControlInfo(
-            tau_raw=tau_raw,
-            tau=tau,
-            q_error=q_error,
-            dq_error=dq_error,
-            sliding_error=sliding,
-            dq_r=dq_r,
-            ddq_r=ddq_r,
-            inertia_hat=self.cfg.nominal_inertia.copy(),
-            damping_hat=self.cfg.nominal_damping.copy(),
-            bias_hat=np.zeros_like(q),
-            mass_hat=np.full_like(q, np.nan, dtype=float),
-            saturated=bool(np.any(np.abs(tau_raw - tau) > 1e-9)),
-        )
-
-
-class PlainPDController:
-    """Classical joint-space Lyapunov PD baseline."""
-
-    name = "plain_pd"
-
-    def __init__(self, cfg: PDControllerConfig, torque_limits: np.ndarray) -> None:
-        self.cfg = cfg
-        self.torque_limits = np.asarray(torque_limits, dtype=float)
-
-    def reset(self) -> None:
-        return None
-
-    def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
-        del dt
-        q_error = angle_error(q, ref.q)
-        dq_error = dq - ref.dq
-        tau_raw = -self.cfg.kp * q_error - self.cfg.kd * dq_error
-        tau = np.clip(tau_raw, -self.torque_limits, self.torque_limits)
-        return ControlInfo(
-            tau_raw=tau_raw,
-            tau=tau,
-            q_error=q_error,
-            dq_error=dq_error,
-            sliding_error=dq_error,
-            dq_r=ref.dq.copy(),
-            ddq_r=np.zeros_like(q),
-            inertia_hat=np.full_like(q, np.nan, dtype=float),
-            damping_hat=np.full_like(q, np.nan, dtype=float),
-            bias_hat=np.full_like(q, np.nan, dtype=float),
-            mass_hat=np.full_like(q, np.nan, dtype=float),
-            saturated=bool(np.any(np.abs(tau_raw - tau) > 1e-9)),
-        )
-
-
-class RobustAdaptiveController:
-    """Robust adaptive controller with sliding mode: tau = M*ddq_r + D*dq - b_hat - K*s - rho*sat(s/epsilon)"""
-
-    name = "robust"
-
-    def __init__(self, cfg: AdaptiveControllerConfig, torque_limits: np.ndarray) -> None:
-        self.cfg = cfg
-        self.torque_limits = np.asarray(torque_limits, dtype=float)
-        self.inertia_hat = cfg.initial_inertia_hat.copy()
-        self.damping_hat = cfg.initial_damping_hat.copy()
-        self.bias_hat = cfg.initial_bias_hat.copy()
-        # Robust gains
-        self.K = np.array(cfg.sliding_gain) * 2.0  # Higher gain for robustness
-        self.rho = 5.0  # Robust boundary layer gain
-        self.epsilon = 0.5  # Sliding surface boundary layer width
-
-    def reset(self) -> None:
-        self.inertia_hat = self.cfg.initial_inertia_hat.copy()
-        self.damping_hat = self.cfg.initial_damping_hat.copy()
-        self.bias_hat = self.cfg.initial_bias_hat.copy()
-
-    def _sat(self, x: np.ndarray) -> np.ndarray:
-        """Saturation function for sliding mode."""
-        return np.where(
-            np.abs(x) > 1.0,
-            np.sign(x),
-            x,
-        )
 
     def compute(self, q: np.ndarray, dq: np.ndarray, ref: ReferenceState, dt: float) -> ControlInfo:
         q_error, dq_error, sliding, dq_r, ddq_r = _filtered_errors(

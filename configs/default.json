@@ -1,0 +1,77 @@
+{
+  "robot": {
+    "base_xy": [0.0, 0.0],
+    "link_lengths": [90.0, 70.0, 40.0],
+    "initial_angles": [0.2, 0.1, -0.2]
+  },
+  "dynamics": {
+    "true_inertia": [1.2, 0.8, 0.45],
+    "true_damping": [0.08, 0.06, 0.05],
+    "link_masses": [1.0, 0.7, 0.6],
+    "torque_limits": [80.0, 60.0, 40.0],
+    "disturbance_constant": [0.0, 0.0, 0.0],
+    "disturbance_amplitude": [0.0, 0.0, 0.0],
+    "disturbance_frequency": [0.0, 0.0, 0.0]
+  },
+  "target": {
+    "center_xy": [60.0, 0.0],
+    "amplitude_xy": [165.0, 45.0],
+    "omega": 0.7,
+    "threshold": 10.0
+  },
+  "obstacles": {
+    "radius": 0.0,
+    "base_centers": [],
+    "amplitudes": [],
+    "omegas": [],
+    "phases": []
+  },
+  "planner": {
+    "goal_gain": 2.0,
+    "max_task_speed": 120.0,
+    "damping": 20.0,
+    "max_joint_speed": 2.5,
+    "safe_margin": 0.0,
+    "repulsion_influence": 1.0,
+    "repulsion_gain": 0.0,
+    "repulsion_scale": 0.0,
+    "repulsion_joint_gain": 0.0,
+    "startup_ramp_time": 0.5
+  },
+  "adaptive_controller": {
+    "lambda_gain": 6.0,
+    "sliding_gain": [18.0, 16.0, 12.0],
+    "gamma_inertia": [0.8, 0.8, 0.8],
+    "gamma_damping": [0.5, 0.5, 0.5],
+    "gamma_bias": [0.4, 0.4, 0.4],
+    "gamma_mass": [0.08, 0.08, 0.08],
+    "initial_inertia_hat": [1.2, 0.8, 0.45],
+    "initial_damping_hat": [0.08, 0.06, 0.05],
+    "initial_bias_hat": [0.0, 0.0, 0.0],
+    "initial_mass_hat": [1.0, 0.7, 0.6],
+    "inertia_bounds": [0.05, 8.0],
+    "damping_bounds": [0.0, 2.0],
+    "bias_bounds": [-100.0, 100.0],
+    "mass_bounds": [0.05, 3.0]
+  },
+  "backstepping_controller": {
+    "k1": [10.0, 10.0, 10.0],
+    "k2": [10.0, 10.0, 10.0],
+    "assumed_link_masses": [1.0, 0.7, 0.6]
+  },
+  "controller_selection": {
+    "controller_type": "all",
+    "simulate_payload_error": false,
+    "payload_multiplier": 3.0
+  },
+  "simulation": {
+    "dt": 0.01,
+    "duration": 12.0,
+    "tail_window_seconds": 2.0
+  },
+  "output": {
+    "figures_dir": "figures",
+    "animations_dir": "animations",
+    "data_dir": "data"
+  }
+}
