@@ -624,4 +624,43 @@ Plots in this section come from `figures/comparison/payload/`. The real third-li
 
 **Figure 12.** Control torques and clearance. The third joint's torque is visibly larger in payload than in nominal, consistent with the additional gravity load. No torque-limit saturation events are recorded for the backstepping controllers in this run.
 
-### Interpretation of
+### Interpretation of the payload scenario
+
+- `backstepping_full` and `backstepping_simp` fail because the feedforward they apply uses the nominal $G(q)$ and $M(q)$, while the true plant has a third-link gravity contribution roughly three times larger. The controllers commit a constant feedforward error proportional to the mass mismatch, which the feedback gains $K_1, K_2 = 10$ cannot fully cancel given the actuator limits.
+- `adaptive_simp` survives because its gravity regressor explicitly identifies the direction in which the model is wrong (the column of $Y_g(q)$ corresponding to $m_3$) and adapts the mass estimate to cancel that direction. The actual mass estimate does not converge to 1.8 kg — it cannot, due to the lack of persistent excitation — but it shifts enough to make the controlled gravity term close to the real one along the trajectory.
+- `adaptive` fails for the same structural reason as in nominal, with no qualitative change.
+
+## 10. Comparison Discussion
+
+The mandatory Project 2+ comparison (§10 of the course requirements) is structured as four controllers × two scenarios. The failure modes observed are summarised below.
+
+| Controller | Nominal scenario | Payload scenario |
+|---|---|---|
+| `backstepping_full` | works: tail $\|z_1\| \approx 0.011$ rad, 100 % success | **fails: steady-state tracking error** of order 1 rad on joint 3; wrong feedforward direction |
+| `backstepping_simp` | works: tail $\|z_1\| \approx 0.008$ rad, 100 % success | **fails: similar to `backstepping_full`**, slightly worse because missing Coriolis term also matters more |
+| `adaptive_simp` | works after transient: tail $\|z_1\| \approx 0.30$ rad, 42 % success | **works: tail $\|z_1\| \approx 0.20$ rad, 77 % success — the only controller that survives** |
+| `adaptive` | **fails: persistent oscillations**, $V_e \approx 400$, parameter estimates drift to bounds | fails identically — wrong plant model in both cases |
+
+The comparison demonstrates three distinct lessons that match the course's stated useful failure modes (§10 of the requirements):
+
+1. **Slow convergence / poor tracking from wrong model class.** The Slotine-Li controller designed for a diagonal joint-space plant cannot track on a full-physics manipulator no matter the scenario. This is a *wrong-tool* failure: the adaptation laws are correct for their model class, but the model class does not contain the true plant.
+2. **Steady-state error under uncertainty.** The two non-adaptive backstepping controllers, while excellent under nominal conditions, fail to reject a structural parameter mismatch (the payload). They commit a feedforward error that the feedback gains cannot fully cancel within actuator limits.
+3. **Recovery via adaptation with the correct regressor structure.** The adaptive-backstepping controller `adaptive_simp` uses the gravity regressor $Y_g(q)$ to explicitly capture the direction in which the model can be wrong. Tracking is restored asymptotically even when neither $\hat m$ nor $\tilde m$ separately converges to a clean value — what matters is that $Y_g(q)\hat m \to G(q,m)$ along the trajectory.
+
+A simpler comparison reading is also valid: backstepping is best when the model is exact; adaptive backstepping is best when it is not.
+
+## 11. Limitations
+
+The following limitations are honest about what the implementation does and does not provide, in line with §13 of the course requirements.
+
+- **Simplified Lyapunov form.** Section 4.1 uses $V = \tfrac{1}{2}(\|z_1\|^2 + \|z_2\|^2)$ instead of the canonical $V = \tfrac{1}{2}\|z_1\|^2 + \tfrac{1}{2}z_2^\top M z_2$. The closed-loop conclusion is the same, but the simplified form does not exploit the skew-symmetry of $\dot M - 2C$ and therefore does not generalise as cleanly to settings where $M$ is configuration-dependent and changing rapidly.
+- **No persistent excitation.** The elliptical reference is too regular to yield persistent excitation in the gravity regressor. The mass estimates of `adaptive_simp` therefore stay bounded but do not converge to the true masses. Tracking is asymptotic, identification is not.
+- **`workspace_trajectories.png` shows only one EE path.** The current implementation of `_save_workspace` in `src/visualisation.py` draws the end-effector trace of the *first* rollout in the dictionary order and only the final arm poses of the others. Comparing EE paths across controllers therefore requires `joint_tracking_errors_z1.png` and the per-controller GIFs.
+- **Torque saturation is not modelled in the proof.** The simulator clips torques to actuator bounds before integration, but Section 4.1 assumes unsaturated control. In the runs reported here no saturation events occur for the backstepping controllers; for the Slotine-Li controller saturation is frequent (see `saturation_fraction` in `summary.csv`), which contributes to its failure.
+- **No sensor noise, no delay, no actuator dynamics.** All signals are exact. Adding noise or first-order actuator dynamics is a natural next step and is expected to mostly affect the adaptation gains, not the conclusions.
+- **Gravity-only regressor.** The implementation linearises $G(q,m)$ in the link masses but does not similarly linearise $M(q)$ in $m$. A full mass-regressor parametrisation would also adapt the inertia matrix; this is left for future work.
+- **The Slotine-Li controller is structurally mismatched.** It is included as a deliberate negative baseline; its results should not be interpreted as a fair benchmark of adaptive control in general.
+
+## 12. AI Usage
+
+Parts of the README structure and prose, as well as the cross-checks between code and equations, were drafted with the help of an AI assistant. All mathematical claims have been verified against the code; all numerical values in the result tables are taken directly from `data/comparison/*/summary.csv` produced by the included scripts.
